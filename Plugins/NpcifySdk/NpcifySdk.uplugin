@@ -1,0 +1,24 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Npcify Unreal SDK",
+  "Description": "Npcify AI character SDK for Unreal Engine 5 with NPCP binary performance streaming, offline baked conversations, VRM/ARKit morph-target facial expressions, viseme lip-sync, skeletal animation, LookAt gaze tracking, and 3D spatial audio.",
+  "Category": "AI",
+  "CreatedBy": "Npcify",
+  "CreatedByURL": "https://npcify.ai",
+  "DocsURL": "https://npcify.ai",
+  "MarketplaceURL": "",
+  "SupportURL": "https://npcify.ai",
+  "CanContainContent": true,
+  "IsBetaVersion": false,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "NpcifySdk",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

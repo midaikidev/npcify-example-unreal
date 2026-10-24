@@ -1,0 +1,23 @@
+# Unreal Engine
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+.vs/
+.vscode/
+.idea/
+*.sln
+*.xcworkspace
+*.xcodeproj
+*.code-workspace
+.DS_Store
+
+# Character sources for Scripts/import_characters.sh (download with Scripts/fetch_characters.py)
+RawCharacters/
+Content/NpcifyImportTemp/
+
+# Local secrets
+.env
