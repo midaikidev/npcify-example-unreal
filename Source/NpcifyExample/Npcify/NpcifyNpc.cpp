@@ -26,6 +26,10 @@ ANpcifyNpc::ANpcifyNpc()
 	Mesh->SetRelativeLocationAndRotation(FVector(0.f, 0.f, -90.f), FRotator(0.f, -90.f, 0.f));
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Mesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	// Stencil 1: the toon post-process (PP_NpcifyToon) keeps the MToon shading of the
+	// character and adds only the ink lines.
+	Mesh->SetRenderCustomDepth(true);
+	Mesh->SetCustomDepthStencilValue(1);
 
 	Npcify = CreateDefaultSubobject<UNpcifyCharacterComponent>(TEXT("Npcify"));
 	Npcify->HeadBoneName = TEXT("head");

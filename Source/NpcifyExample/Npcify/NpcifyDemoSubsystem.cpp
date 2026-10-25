@@ -1,6 +1,8 @@
 #include "NpcifyDemoSubsystem.h"
 
+#include "Engine/PostProcessVolume.h"
 #include "Engine/World.h"
+#include "Materials/MaterialInterface.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
 #include "Misc/CommandLine.h"
@@ -81,6 +83,25 @@ void UNpcifyDemoSubsystem::OnWorldBeginPlay(UWorld& World)
 	}
 
 	World.SpawnActor<ANpcifyDialogueDirector>();
+
+	// Anime look for the whole level: cel shading and ink lines (Scripts/make_toon_material.py).
+	if (UMaterialInterface* Toon = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Npcify/Rendering/PP_NpcifyToon.PP_NpcifyToon")))
+	{
+		APostProcessVolume* Volume = World.SpawnActor<APostProcessVolume>();
+		Volume->bUnbound = true;
+		Volume->Priority = 10.f;
+		Volume->Settings.AddBlendable(Toon, 1.f);
+		Volume->Settings.bOverride_ColorSaturation = true;
+		Volume->Settings.ColorSaturation = FVector4(1.12f, 1.12f, 1.12f, 1.f);
+		// Noise of Lumen and ambient occlusion makes speckles at the cel band edges.
+		// A flat sky light gives one clean shade tone.
+		Volume->Settings.bOverride_DynamicGlobalIlluminationMethod = true;
+		Volume->Settings.DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::None;
+		Volume->Settings.bOverride_ReflectionMethod = true;
+		Volume->Settings.ReflectionMethod = EReflectionMethod::None;
+		Volume->Settings.bOverride_AmbientOcclusionIntensity = true;
+		Volume->Settings.AmbientOcclusionIntensity = 0.f;
+	}
 
 	FString AutotestFolder;
 	if (FParse::Value(FCommandLine::Get(), TEXT("NpcifyAutotest="), AutotestFolder))

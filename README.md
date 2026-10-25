@@ -66,6 +66,7 @@ Esc stops Play In Editor, so use **Q** in the editor.
 | NPC actor: VRM model, baked animations, Npcify Character component | `Source/NpcifyExample/Npcify/NpcifyNpc.cpp` |
 | Interaction prompt, conversation flow, input, conversation camera | `Source/NpcifyExample/Npcify/NpcifyDialogueDirector.cpp` |
 | RPG dialogue UI (UMG built in C++) | `Source/NpcifyExample/Npcify/NpcifyDialogueWidget.cpp` |
+| Anime post-process material | `Scripts/make_toon_material.py` |
 | Editor import of the characters | `Source/NpcifyExampleEditor/Private/NpcifyImportCharactersCommandlet.cpp` |
 
 `UNpcifyCharacterComponent` from the Npcify Unreal SDK (`Plugins/NpcifySdk`,
@@ -86,6 +87,29 @@ materials, the morph targets and the spring-bone post-process AnimBP). The
 character's VRMA animations from Npcify are baked onto the character skeleton
 (`Animations/AS_<animation ID>`), so the NPC plays the same idle, bow or
 gesture animations that the Npcify web player uses.
+
+### Anime look
+
+The level is drawn in a cel-shaded anime style. The post-process material
+`/Game/Npcify/Rendering/PP_NpcifyToon` (made by `Scripts/make_toon_material.py`)
+runs after tonemapping:
+
+- **Cel shading.** The light on each pixel (scene color divided by base color)
+  becomes two flat tones: lit, and a tinted shade. The VRM characters keep their
+  own MToon shading (custom stencil 1, set by `ANpcifyNpc`).
+- **Ink lines.** Depth and normal edges darken the color below them, so the
+  lines have the color of the surface. They fade out with distance.
+
+`UNpcifyDemoSubsystem` adds an unbound post-process volume with this material. The
+volume also turns off Lumen global illumination, Lumen reflections and ambient
+occlusion: their noise makes speckles at the edge between the two tones. To change
+the look, change the material parameters (`Threshold`, `ShadeTint`, `InkColor`,
+`Thickness` and others) in a material instance, or edit the script and run it again:
+
+```bash
+"/Users/Shared/Epic Games/UE_5.8/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PWD/NpcifyExample.uproject" \
+  -run=pythonscript -script="$PWD/Scripts/make_toon_material.py"
+```
 
 ## Use your own characters
 
