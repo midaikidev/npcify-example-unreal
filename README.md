@@ -111,8 +111,9 @@ gesture animations that the Npcify web player uses.
 
    The commandlet `NpcifyImportCharacters` imports each model with VRM4U, sets
    the alpha cutoff of masked materials, and retargets each VRMA animation
-   (VRMA → UE5 Mannequin → character) with the IK retargeters that VRM4U
-   generates.
+   directly onto the character (FK chains only, as the Npcify web player does).
+   The script deletes `Content/Npcify/Characters` first and makes all character
+   assets again.
 4. If you renamed the folders, change the entries in
    `Source/NpcifyExample/Npcify/NpcifyDemoSubsystem.cpp`.
 

@@ -9,7 +9,8 @@ case "$(uname -s)" in
   Linux) EDITOR_CMD="$ENGINE/Engine/Binaries/Linux/UnrealEditor-Cmd" ;;
   *) EDITOR_CMD="$ENGINE/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" ;;
 esac
-rm -rf "$ROOT/Content/NpcifyImportTemp"
+# VRM4U cannot import over assets that exist. Each import makes all character assets again.
+rm -rf "$ROOT/Content/NpcifyImportTemp" "$ROOT/Content/Npcify/Characters"
 "$EDITOR_CMD" "$ROOT/NpcifyExample.uproject" -run=NpcifyImportCharacters -unattended -nopause -nosplash -stdout
 # The temporary VRMA models, IK rigs and retargeters are not needed after the bake.
 rm -rf "$ROOT/Content/NpcifyImportTemp"

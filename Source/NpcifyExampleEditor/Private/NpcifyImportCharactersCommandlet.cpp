@@ -12,6 +12,8 @@
 #include "Misc/Paths.h"
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetChainMapping.h"
+#include "Retargeter/RetargetOps/FKChainsOp.h"
+#include "Retargeter/RetargetOps/PelvisMotionOp.h"
 #include "RetargetEditor/IKRetargetBatchOperation.h"
 #include "RetargetEditor/IKRetargeterController.h"
 #include "Rig/IKRigDefinition.h"
@@ -66,6 +68,33 @@ namespace
 		Args.TopLevelFlags = RF_Public | RF_Standalone;
 		UPackage::SavePackage(Package, Object, *FileName, Args);
 	}
+
+	/** FK-only retargeter between two VRM humanoid IK rigs (same chain names). */
+	UIKRetargeter* MakeDirectRetargeter(const FString& Folder, UIKRigDefinition* SourceRig, USkeletalMesh* SourceMesh,
+		UIKRigDefinition* TargetRig, USkeletalMesh* TargetMesh)
+	{
+		const FString AssetName = TEXT("RTG_direct");
+		UPackage* Package = CreatePackage(*(Folder / AssetName));
+		UIKRetargeter* Retargeter = NewObject<UIKRetargeter>(Package, *AssetName, RF_Public | RF_Standalone);
+		UIKRetargeterController* Controller = UIKRetargeterController::GetController(Retargeter);
+		if (Controller == nullptr)
+		{
+			return nullptr;
+		}
+		Controller->SetIKRig(ERetargetSourceOrTarget::Source, SourceRig);
+		Controller->SetIKRig(ERetargetSourceOrTarget::Target, TargetRig);
+		Controller->SetPreviewMesh(ERetargetSourceOrTarget::Source, SourceMesh);
+		Controller->SetPreviewMesh(ERetargetSourceOrTarget::Target, TargetMesh);
+		Controller->RemoveAllOps();
+		Controller->AddRetargetOp(FIKRetargetPelvisMotionOp::StaticStruct());
+		Controller->AddRetargetOp(FIKRetargetFKChainsOp::StaticStruct());
+		Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, SourceRig);
+		Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, TargetRig);
+		Controller->AutoMapChains(EAutoMapChainType::Exact, true);
+		SaveObjectPackage(Retargeter);
+		return Retargeter;
+	}
+
 
 	/** Reads the JSON chunk of a GLB file (VRM). */
 	TSharedPtr<FJsonObject> ReadGlbJson(const FString& File)
@@ -201,48 +230,30 @@ bool UNpcifyImportCharactersCommandlet::ImportCharacter(const FString& Folder)
 			continue;
 		}
 
-		// 2. Bake through the UE5 Mannequin with the retargeters that VRM4U generated:
-		//    VRMA -> Mannequin (RTG_<animation>), then Mannequin -> character (RTG_character).
-		UIKRetargeter* ToMannequin = FindAsset<UIKRetargeter>(TemporaryFolder, TEXT("RTG_") + Name);
-		UIKRetargeter* ToCharacter = FindAsset<UIKRetargeter>(CharacterFolder, TEXT("RTG_character"));
-		USkeletalMesh* Mannequin = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
-		if (ToMannequin == nullptr || ToCharacter == nullptr || Mannequin == nullptr)
+		// 2. Retarget the VRMA directly onto the character. Both rest poses are the VRM T-pose,
+		//    so FK rotations alone give the same pose as the Npcify web player (three-vrm).
+		//    Hand IK goals (for example through the UE5 Mannequin) move the hands away from
+		//    the body on characters with other proportions.
+		UIKRigDefinition* VrmaRig = FindHumanoidRig(Vrma);
+		UIKRetargeter* Retargeter = VrmaRig ? MakeDirectRetargeter(TemporaryFolder, VrmaRig, Vrma->SkeletalMesh, CharacterRig, Character->SkeletalMesh) : nullptr;
+		if (Retargeter == nullptr)
 		{
-			UE_LOG(LogNpcifyImport, Error, TEXT("Missing retargeter for %s (to mannequin: %d, to character: %d, mannequin: %d)"),
-				*Name, ToMannequin != nullptr, ToCharacter != nullptr, Mannequin != nullptr);
+			UE_LOG(LogNpcifyImport, Error, TEXT("Cannot make the retargeter for %s (VRMA IK rig: %d)"), *Name, VrmaRig != nullptr);
 			bAllAnimations = false;
 			continue;
 		}
 
-		FIKRetargetBatchOperationInputs First;
-		First.AssetsToRetarget.Add(FAssetData(SourceAnimation));
-		First.SourceMesh = Vrma->SkeletalMesh;
-		First.TargetMesh = Mannequin;
-		First.IKRetargetAsset = ToMannequin;
-		First.TargetPath = TemporaryFolder / TEXT("Mannequin");
-		First.Search = TEXT("A_");
-		First.Replace = TEXT("AM_");
-		First.bIncludeReferencedAssets = false;
-		First.bOverwriteExistingFiles = true;
-		const TArray<FAssetData> OnMannequin = UIKRetargetBatchOperation::RunBatchRetarget(First);
-		if (OnMannequin.Num() == 0)
-		{
-			UE_LOG(LogNpcifyImport, Error, TEXT("Animation retarget to the mannequin failed: %s"), *Name);
-			bAllAnimations = false;
-			continue;
-		}
-
-		FIKRetargetBatchOperationInputs Second;
-		Second.AssetsToRetarget = OnMannequin;
-		Second.SourceMesh = Mannequin;
-		Second.TargetMesh = Character->SkeletalMesh;
-		Second.IKRetargetAsset = ToCharacter;
-		Second.TargetPath = CharacterFolder / TEXT("Animations");
-		Second.Search = TEXT("AM_");
-		Second.Replace = TEXT("AS_");
-		Second.bIncludeReferencedAssets = false;
-		Second.bOverwriteExistingFiles = true;
-		const TArray<FAssetData> Created = UIKRetargetBatchOperation::RunBatchRetarget(Second);
+		FIKRetargetBatchOperationInputs Inputs;
+		Inputs.AssetsToRetarget.Add(FAssetData(SourceAnimation));
+		Inputs.SourceMesh = Vrma->SkeletalMesh;
+		Inputs.TargetMesh = Character->SkeletalMesh;
+		Inputs.IKRetargetAsset = Retargeter;
+		Inputs.TargetPath = CharacterFolder / TEXT("Animations");
+		Inputs.Search = TEXT("A_");
+		Inputs.Replace = TEXT("AS_");
+		Inputs.bIncludeReferencedAssets = false;
+		Inputs.bOverwriteExistingFiles = true;
+		const TArray<FAssetData> Created = UIKRetargetBatchOperation::RunBatchRetarget(Inputs);
 		for (const FAssetData& Asset : Created)
 		{
 			UE_LOG(LogNpcifyImport, Display, TEXT("Animation %s -> %s"), *Name, *Asset.GetObjectPathString());
