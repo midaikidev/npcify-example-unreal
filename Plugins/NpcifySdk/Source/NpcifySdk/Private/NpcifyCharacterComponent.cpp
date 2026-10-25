@@ -105,6 +105,7 @@ void UNpcifyCharacterComponent::RefreshAvatarBindings()
     if (!IsValid(AudioComponent))
     {
         AudioComponent = Owner->FindComponentByClass<UAudioComponent>();
+        bOwnsAudioComponent = false;
         if (!IsValid(AudioComponent))
         {
             AudioComponent = NewObject<UAudioComponent>(Owner, TEXT("NpcifyVoiceAudio"));
@@ -112,11 +113,44 @@ void UNpcifyCharacterComponent::RefreshAvatarBindings()
             {
                 AudioComponent->SetupAttachment(Owner->GetRootComponent());
                 AudioComponent->bAutoActivate = false;
-                AudioComponent->bAllowSpatialization = bSpatialAudio;
                 AudioComponent->RegisterComponent();
+                bOwnsAudioComponent = true;
             }
         }
     }
+    ApplyVoiceSpatialization();
+}
+
+void UNpcifyCharacterComponent::ApplyVoiceSpatialization()
+{
+    if (!IsValid(AudioComponent)) return;
+
+    AudioComponent->bAllowSpatialization = bSpatialAudio;
+    if (!bSpatialAudio)
+    {
+        AudioComponent->AttenuationSettings = nullptr;
+        AudioComponent->bOverrideAttenuation = false;
+        return;
+    }
+    if (VoiceAttenuation)
+    {
+        AudioComponent->AttenuationSettings = VoiceAttenuation;
+        AudioComponent->bOverrideAttenuation = false;
+        return;
+    }
+    const bool bHasOwnAttenuation = AudioComponent->AttenuationSettings != nullptr || AudioComponent->bOverrideAttenuation;
+    if (!bOwnsAudioComponent && bHasOwnAttenuation) return;
+
+    // Without attenuation settings Unreal plays a sound in 2D, whatever bAllowSpatialization is.
+    FSoundAttenuationSettings& Settings = AudioComponent->AttenuationOverrides;
+    Settings.bAttenuate = true;
+    Settings.bSpatialize = true;
+    Settings.DistanceAlgorithm = EAttenuationDistanceModel::Linear;
+    Settings.AttenuationShape = EAttenuationShape::Sphere;
+    Settings.AttenuationShapeExtents = FVector(FMath::Max(VoiceInnerRadius, 0.0f), 0.0f, 0.0f);
+    Settings.FalloffDistance = FMath::Max(VoiceFalloffDistance, 1.0f);
+    AudioComponent->AttenuationSettings = nullptr;
+    AudioComponent->bOverrideAttenuation = true;
 }
 
 USkeletalMeshComponent* UNpcifyCharacterComponent::GetSkeletalMeshComponent() const

@@ -1,6 +1,7 @@
 #include "NpcifyDemoAutotest.h"
 
 #include "Animation/MorphTarget.h"
+#include "AudioMixerBlueprintLibrary.h"
 #include "Engine/SkeletalMesh.h"
 #include "Camera/CameraActor.h"
 #include "Components/AudioComponent.h"
@@ -18,6 +19,28 @@
 ANpcifyDemoAutotest::ANpcifyDemoAutotest()
 {
 	PrimaryActorTick.bCanEverTick = true;
+}
+
+void ANpcifyDemoAutotest::LogVoiceSpatialization(const FString& Tag, const UAudioComponent* Audio)
+{
+	const FSoundAttenuationSettings* Settings = Audio ? Audio->GetAttenuationSettingsToApply() : nullptr;
+	APlayerController* Controller = UGameplayStatics::GetPlayerController(this, 0);
+	FVector Listener = FVector::ZeroVector;
+	if (Controller)
+	{
+		FVector Front;
+		FVector Right;
+		Controller->GetAudioListenerPosition(Listener, Front, Right);
+		FVector Override;
+		if (Controller->GetAudioListenerAttenuationOverridePosition(Override))
+		{
+			Listener = Override;
+		}
+	}
+	UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s voice spatialize=%d attenuate=%d inner=%.0f falloff=%.0f distance=%.0f"), *Tag,
+		Settings && Settings->bSpatialize, Settings && Settings->bAttenuate,
+		Settings ? Settings->AttenuationShapeExtents.X : 0.f, Settings ? Settings->FalloffDistance : 0.f,
+		Audio ? FVector::Dist(Audio->GetComponentLocation(), Listener) : -1.f);
 }
 
 void ANpcifyDemoAutotest::Step(const FString& Label, float Delay, TFunction<bool()> Done, TFunction<void()> Action)
@@ -103,12 +126,19 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 			});
 			Step(Tag + TEXT(" walk"), 0.f, nullptr, [this, Npc]() { MovePlayerNear(Npc); });
 			Step(Tag + TEXT(" prompt"), 1.5f, nullptr, [this, Tag, Shot]() { Capture(FString::Printf(TEXT("%02d-%s-prompt"), Shot, *Tag)); });
-			Step(Tag + TEXT(" open"), 0.f, nullptr, [Dialogue]() { Dialogue->TryOpenNearby(); });
+			Step(Tag + TEXT(" open"), 0.f, nullptr, [this, Dialogue]()
+			{
+				Dialogue->TryOpenNearby();
+				// The output mix of the first line, to check the voice level and panning.
+				UAudioMixerBlueprintLibrary::StartRecordingOutput(this, 10.f);
+			});
 			Step(Tag + TEXT(" speaking"), 2.5f, nullptr, [this, Tag, Shot, Dialogue]()
 			{
 				const UAudioComponent* Audio = Dialogue->GetActiveNpc() ? Dialogue->GetActiveNpc()->Npcify->GetAudioComponent() : nullptr;
 				UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s audio playing=%d mouth=%.2f"), *Tag,
 					Audio && Audio->IsPlaying(), Dialogue->GetActiveNpc() ? Dialogue->GetActiveNpc()->Npcify->GetMouthOpenness() : 0.f);
+				LogVoiceSpatialization(Tag, Audio);
+				UAudioMixerBlueprintLibrary::StopRecordingOutput(this, EAudioRecordingExportType::WavFile, Tag + TEXT("-voice"), OutputFolder);
 				Capture(FString::Printf(TEXT("%02d-%s-speaking"), Shot + 1, *Tag));
 			});
 			Step(Tag + TEXT(" choices"), 0.5f, [Dialogue]() { return Dialogue->IsChoosing(); }, [this, Tag, Shot, Dialogue]()
@@ -119,6 +149,26 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 				MaxMouthOpenness = 0.f;
 			});
 			Step(Tag + TEXT(" choose"), 0.5f, nullptr, [Dialogue]() { Dialogue->Choose(0); });
+			// Panning check (offline NPC: its reply starts at once): during the reply, the listener
+			// turns so that the NPC is on its right. The right channel must be louder.
+			if (Npc->Mode == ENpcifyConnectionMode::OfflineBaked)
+			{
+			Step(Tag + TEXT(" pan"), 1.f, nullptr, [this, Npc]()
+			{
+				APlayerController* Controller = UGameplayStatics::GetPlayerController(this, 0);
+				const FVector NpcLocation = Npc->GetActorLocation();
+				const FVector ListenerLocation = NpcLocation + Npc->GetActorForwardVector() * 200.f;
+				const FVector ToNpc = (NpcLocation - ListenerLocation).GetSafeNormal2D();
+				const FVector Forward = FVector::CrossProduct(ToNpc, FVector::UpVector);
+				Controller->SetAudioListenerOverride(nullptr, ListenerLocation, Forward.Rotation());
+				UAudioMixerBlueprintLibrary::StartRecordingOutput(this, 10.f);
+			});
+			Step(Tag + TEXT(" pan end"), 1.5f, nullptr, [this, Tag]()
+			{
+				UAudioMixerBlueprintLibrary::StopRecordingOutput(this, EAudioRecordingExportType::WavFile, Tag + TEXT("-voice-npc-on-right"), OutputFolder);
+				UGameplayStatics::GetPlayerController(this, 0)->ClearAudioListenerOverride();
+			});
+			}
 			Step(Tag + TEXT(" reply"), 1.f, [Dialogue]() { return Dialogue->IsChoosing(); }, [this, Tag, Shot, Dialogue]()
 			{
 				Capture(FString::Printf(TEXT("%02d-%s-reply"), Shot + 3, *Tag));

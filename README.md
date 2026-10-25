@@ -70,7 +70,7 @@ Esc stops Play In Editor, so use **Q** in the editor.
 | Editor import of the characters | `Source/NpcifyExampleEditor/Private/NpcifyImportCharactersCommandlet.cpp` |
 
 `UNpcifyCharacterComponent` from the Npcify Unreal SDK (`Plugins/NpcifySdk`,
-version 0.2.0) does the character work: it plays each staging (speech audio,
+version 0.2.1) does the character work: it plays each staging (speech audio,
 lip-sync visemes, expressions, animation cues, typewriter text) and sets the
 morph targets of the VRM model.
 

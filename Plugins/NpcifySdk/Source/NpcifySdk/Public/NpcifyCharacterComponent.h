@@ -4,6 +4,7 @@
 #include "Components/ActorComponent.h"
 #include "Components/AudioComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Sound/SoundAttenuation.h"
 #include "Sound/SoundWaveProcedural.h"
 #include "Core/NpcifyCharacterRuntime.h"
 #include "NpcifyCharacterComponent.generated.h"
@@ -40,8 +41,21 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio")
     FName HeadBoneName = TEXT("head");
 
+    /** The voice comes from the character: left/right panning and distance falloff. Off: a 2D voice. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio")
     bool bSpatialAudio = true;
+
+    /** Attenuation asset for the voice. Empty: the SDK uses VoiceInnerRadius and VoiceFalloffDistance. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio", meta=(EditCondition="bSpatialAudio"))
+    TObjectPtr<USoundAttenuation> VoiceAttenuation = nullptr;
+
+    /** Full voice volume within this distance from the character, in cm. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio", meta=(EditCondition="bSpatialAudio", ClampMin="0"))
+    float VoiceInnerRadius = 250.0f;
+
+    /** Distance after the inner radius over which the voice fades to silence (linear), in cm. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio", meta=(EditCondition="bSpatialAudio", ClampMin="1"))
+    float VoiceFalloffDistance = 2750.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio")
     bool bAutoBlink = true;
@@ -91,6 +105,14 @@ public:
 
     UFUNCTION(BlueprintPure, Category="Npcify|Character")
     UAudioComponent* GetAudioComponent() const { return AudioComponent; }
+
+    /**
+     * Applies bSpatialAudio, VoiceAttenuation and the voice distances to the voice audio component.
+     * Call it after you change these properties at run time. An audio component of the owner that
+     * already has its own attenuation keeps it, unless VoiceAttenuation is set.
+     */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Rig & Audio")
+    void ApplyVoiceSpatialization();
 
     UFUNCTION(BlueprintPure, Category="Npcify|Character")
     FTransform GetBoneTransform(FName BoneName) const;
@@ -210,6 +232,9 @@ private:
 
     UPROPERTY(Transient)
     UAudioComponent* AudioComponent = nullptr;
+
+    /** True when the SDK made the voice audio component (not a component of the owner). */
+    bool bOwnsAudioComponent = false;
 
     UPROPERTY(Transient)
     USoundWaveProcedural* ProceduralSoundWave = nullptr;

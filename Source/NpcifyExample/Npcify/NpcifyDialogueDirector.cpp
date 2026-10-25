@@ -61,6 +61,12 @@ void ANpcifyDialogueDirector::Tick(float DeltaSeconds)
 	{
 		bPlayerConfigured = true;
 		ConfigureShoulderCamera();
+		// The distance from the player (not from the camera) sets the NPC voice volume.
+		// The camera direction still sets the left/right panning.
+		if (APlayerController* Controller = GetPlayerController())
+		{
+			Controller->SetAudioListenerAttenuationOverride(GetPlayerPawn()->GetRootComponent(), FVector::ZeroVector);
+		}
 	}
 	UpdateLabels();
 	if (Active)

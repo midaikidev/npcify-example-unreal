@@ -20,7 +20,8 @@ public class NpcifyExample : ModuleRules
 			"UMG",
 			"Slate",
 			"SlateCore",
-			"NpcifySdk"
+			"NpcifySdk",
+			"AudioMixer"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {

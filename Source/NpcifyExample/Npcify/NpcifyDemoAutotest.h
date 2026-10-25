@@ -27,6 +27,7 @@ protected:
 private:
 	void Step(const FString& Label, float Delay, TFunction<bool()> Done, TFunction<void()> Action);
 	void Capture(const FString& Name);
+	void LogVoiceSpatialization(const FString& Tag, const class UAudioComponent* Audio);
 	void MovePlayerNear(ANpcifyNpc* Npc);
 	ANpcifyDialogueDirector* Director() const;
 
