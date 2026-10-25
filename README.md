@@ -98,7 +98,9 @@ runs after tonemapping:
   becomes two flat tones: lit, and a tinted shade. The VRM characters keep their
   own MToon shading (custom stencil 1, set by `ANpcifyNpc`).
 - **Ink lines.** Depth and normal edges darken the color below them, so the
-  lines have the color of the surface. They fade out with distance.
+  lines have the color of the surface. They fade out with distance. On the
+  characters only depth edges make lines (the silhouette and overlaps), so hair
+  strands and faces stay clean.
 
 `UNpcifyDemoSubsystem` adds an unbound post-process volume with this material. The
 volume also turns off Lumen global illumination, Lumen reflections and ambient

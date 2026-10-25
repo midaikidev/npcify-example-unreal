@@ -8,6 +8,7 @@ The material runs after tonemapping:
   tones, lit and shade, with a tinted shade. Pixels with custom stencil 1 (the VRM
   characters, which have their own MToon shading) and unlit pixels (sky) keep their color.
 - Ink lines: depth and normal edges darken the color below them, and fade with distance.
+  On the characters only depth edges (silhouettes and overlaps) make lines.
 """
 
 import unreal
@@ -58,7 +59,11 @@ for (int i = 0; i < 4; i++)
     float3 m = SceneTextureLookup(neighbor, 8, false).rgb;
     normalEdge = max(normalEdge, 1 - dot(normal, m / max(length(m), 1e-4)));
 }
-float edge = max(smoothstep(0.05, 0.08, depthEdge), smoothstep(0.35, 0.5, normalEdge));
+// Characters (stencil 1, or unlit MToon with no base color) get only silhouette and
+// overlap lines from depth: normal edges draw a line on every hair strand and face shape.
+bool character = stencil > 0.5 || max(base.r, max(base.g, base.b)) < 0.01;
+float normalLine = character ? 0 : smoothstep(0.35, 0.5, normalEdge);
+float edge = max(smoothstep(0.05, 0.08, depthEdge), normalLine);
 float fade = 1 - saturate((depth - FadeStart) / max(FadeEnd - FadeStart, 1));
 result = lerp(result, result * InkColor, edge * fade * InkStrength);
 if (Debug > 0.5)
