@@ -66,9 +66,10 @@ namespace Npcify
     FNpcifyPlaybackCursor FNpcifyStagingPlayer::GetCursor() const
     {
         FNpcifyPlaybackCursor Out;
-        Out.TimeSeconds = CurrentTimeSeconds;
-        Out.DurationSeconds = TotalDurationSeconds;
         const FStagingDialogueBlock* Block = GetCurrentBlock();
+        // A block that started after its time ends after the timeline.
+        Out.DurationSeconds = Block ? std::max(TotalDurationSeconds, ActiveEnd()) : TotalDurationSeconds;
+        Out.TimeSeconds = std::min(CurrentTimeSeconds, Out.DurationSeconds);
         Out.BlockId = Block ? Block->Id : "";
         return Out;
     }
@@ -143,7 +144,8 @@ namespace Npcify
     {
         const FStagingTimeline& Timeline = ActiveStaging->Timeline;
         double ComputedEnd = Timeline.Duration;
-        for (const auto& B : Timeline.Dialogue) ComputedEnd = std::max(ComputedEnd, B.EndTime);
+        // A pending block plays to the end of its audio.
+        for (const auto& B : Timeline.Dialogue) ComputedEnd = std::max(ComputedEnd, BlockEnd(B));
         for (const auto& E : Timeline.Expressions) ComputedEnd = std::max(ComputedEnd, E.EndTime);
         for (const auto& A : Timeline.Animations) ComputedEnd = std::max(ComputedEnd, A.EndTime);
         TotalDurationSeconds = std::max(0.01, ComputedEnd);
@@ -158,15 +160,21 @@ namespace Npcify
         // The clock stops at the first block that cannot play yet, or at the end of the
         // published dialogue while more may come.
         const std::vector<FStagingDialogueBlock>& Dialogue = ActiveStaging->Timeline.Dialogue;
+        double Limit = 0.0;
         if (ReadyBlocks < Dialogue.size())
         {
-            return Dialogue[ReadyBlocks].StartTime;
+            Limit = Dialogue[ReadyBlocks].StartTime;
         }
-        if (bStreamComplete)
+        else if (bStreamComplete)
         {
             return std::numeric_limits<double>::infinity();
         }
-        return Dialogue.empty() ? 0.0 : BlockEnd(Dialogue.back());
+        else
+        {
+            Limit = Dialogue.empty() ? 0.0 : BlockEnd(Dialogue.back());
+        }
+        // A block that started after its time plays to its own end.
+        return GetCurrentBlock() ? std::max(Limit, ActiveEnd()) : Limit;
     }
 
     void FNpcifyStagingPlayer::SetBlockAudioLength(const std::string& BlockId, double Seconds)
@@ -174,6 +182,10 @@ namespace Npcify
         if (!BlockId.empty() && Seconds > 0.0 && !std::isinf(Seconds))
         {
             AudioLengths[BlockId] = Seconds;
+            if (ActiveStaging)
+            {
+                RecomputeDuration();
+            }
         }
     }
 
@@ -189,26 +201,51 @@ namespace Npcify
         return Found == AudioLengths.end() ? Block.EndTime : std::max(Block.EndTime, Block.StartTime + Found->second);
     }
 
+    double FNpcifyStagingPlayer::ActiveEnd() const
+    {
+        const FStagingDialogueBlock& Block = ActiveStaging->Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)];
+        return ActiveStartedAt + (BlockEnd(Block) - Block.StartTime);
+    }
+
+    bool FNpcifyStagingPlayer::HasStarted(size_t Index) const
+    {
+        return Index < StartedBlocks.size() && StartedBlocks[Index];
+    }
+
+    bool FNpcifyStagingPlayer::AllBlocksStarted() const
+    {
+        for (size_t Index = 0; Index < ActiveStaging->Timeline.Dialogue.size(); ++Index)
+        {
+            if (!HasStarted(Index))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     int FNpcifyStagingPlayer::FindBlockToPlay() const
     {
-        const std::vector<FStagingDialogueBlock>& Dialogue = ActiveStaging->Timeline.Dialogue;
-        if (ActiveBlockIndex >= 0 && static_cast<size_t>(ActiveBlockIndex) < Dialogue.size() &&
-            CurrentTimeSeconds <= BlockEnd(Dialogue[static_cast<size_t>(ActiveBlockIndex)]))
+        if (GetCurrentBlock() && CurrentTimeSeconds <= ActiveEnd())
         {
             return ActiveBlockIndex;
         }
-        // Only blocks that can play, from the first one that did not start: the end of a block
-        // can move back when its final version comes, and a block must not start again.
+        // The earliest block that can play, did not start and whose time came; also when the clock
+        // passed its end: it then plays from its own start. The end of a block can move back when
+        // its final version comes, and a block never starts again.
+        const std::vector<FStagingDialogueBlock>& Dialogue = ActiveStaging->Timeline.Dialogue;
         const size_t Playable = bStreamed ? std::min(ReadyBlocks, Dialogue.size()) : Dialogue.size();
-        for (size_t Index = NextBlockIndex; Index < Playable; ++Index)
+        int Found = -1;
+        for (size_t Index = 0; Index < Playable; ++Index)
         {
             const FStagingDialogueBlock& Block = Dialogue[Index];
-            if (CurrentTimeSeconds >= Block.StartTime && CurrentTimeSeconds <= BlockEnd(Block))
+            if (!HasStarted(Index) && Block.StartTime <= CurrentTimeSeconds &&
+                (Found < 0 || Block.StartTime < Dialogue[static_cast<size_t>(Found)].StartTime))
             {
-                return static_cast<int>(Index);
+                Found = static_cast<int>(Index);
             }
         }
-        return -1;
+        return Found;
     }
 
     void FNpcifyStagingPlayer::Stop()
@@ -220,7 +257,10 @@ namespace Npcify
         }
         ActiveStaging.reset();
         ActiveBlockIndex = -1;
-        NextBlockIndex = 0;
+        StartedBlocks.clear();
+        ActiveStartedAt = 0.0;
+        ActiveSeenAt = 0.0;
+        LastEndedAt = 0.0;
         AudioLengths.clear();
         NextCharIndex = 0;
         CurrentTimeSeconds = 0.0;
@@ -283,8 +323,11 @@ namespace Npcify
         const int NewBlockIdx = FindBlockToPlay();
         if (NewBlockIdx != ActiveBlockIndex)
         {
-            if (ActiveBlockIndex >= 0 && static_cast<size_t>(ActiveBlockIndex) < Timeline.Dialogue.size())
+            if (GetCurrentBlock())
             {
+                // Its voice played to its end, or longer: the clock ran with the audio of a
+                // pending block until its final version moved its end back.
+                LastEndedAt = std::max(ActiveEnd(), ActiveSeenAt);
                 if (OnDialogueBlockEnded) OnDialogueBlockEnded(Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)]);
             }
             ActiveBlockIndex = NewBlockIdx;
@@ -292,8 +335,17 @@ namespace Npcify
 
             if (ActiveBlockIndex >= 0)
             {
-                NextBlockIndex = static_cast<size_t>(ActiveBlockIndex) + 1;
-                const auto& Block = Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)];
+                const size_t Index = static_cast<size_t>(ActiveBlockIndex);
+                if (StartedBlocks.size() <= Index)
+                {
+                    StartedBlocks.resize(Index + 1, false);
+                }
+                StartedBlocks[Index] = true;
+                const auto& Block = Timeline.Dialogue[Index];
+                // A block starts at its time, or when the voice before it ended: its audio, visemes
+                // and text count from there.
+                ActiveStartedAt = std::max(Block.StartTime, LastEndedAt);
+                ActiveSeenAt = ActiveStartedAt;
                 CurrentText = Block.Text;
                 RevealedText.clear();
                 VisemePlayer.LoadCues(Block.Visemes);
@@ -313,7 +365,11 @@ namespace Npcify
         if (ActiveBlockIndex >= 0)
         {
             const auto& Block = Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)];
-            const double LocalTime = std::max(0.0, CurrentTimeSeconds - Block.StartTime);
+            if (CurrentTimeSeconds <= ActiveEnd())
+            {
+                ActiveSeenAt = std::max(ActiveSeenAt, CurrentTimeSeconds);
+            }
+            const double LocalTime = std::max(0.0, CurrentTimeSeconds - ActiveStartedAt);
             if (!Block.Characters.empty())
             {
                 while (static_cast<size_t>(NextCharIndex) < Block.Characters.size())
@@ -351,7 +407,8 @@ namespace Npcify
         FacialMixer.Update(static_cast<float>(Dt));
 
         const bool bDialogueComplete = !bStreamed || bStreamComplete;
-        if (bDialogueComplete && CurrentTimeSeconds >= TotalDurationSeconds)
+        // Every block plays to its end first, also a block that started after its time.
+        if (bDialogueComplete && ActiveBlockIndex < 0 && CurrentTimeSeconds >= TotalDurationSeconds && AllBlocksStarted())
         {
             const FStagingResultPayload Completed = *Staging;
             RevealedText = Completed.Text;

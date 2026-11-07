@@ -85,10 +85,11 @@ a gap and without a repeated block.
   on with the voice. The part without lip-sync has a neutral mouth until a later
   revision adds its visemes and text timing at the current time. At the end of
   its audio, a block that is not final waits for its final version, which ends
-  it at its end time. The clock never goes back, and a block never starts
-  again. At the end of the ready blocks the reply waits with a neutral mouth
-  until the next block can play. The staging clock and the live motion frames
-  wait too.
+  it at its end time. The clock never goes back, and a block never starts again:
+  when the clock already passed the new end, the next block starts at the
+  current time and plays from its own start. At the end of the ready blocks the
+  reply waits with a neutral mouth until the next block can play. The staging
+  clock and the live motion frames wait too.
 - **Events:** `OnSpeechStart` fires when the first block plays, with the text
   known at that time. `OnSpeechEnd` fires once, after the last block and when
   the reply options are known, so `GetCurrentReplyOptions()` gives them.

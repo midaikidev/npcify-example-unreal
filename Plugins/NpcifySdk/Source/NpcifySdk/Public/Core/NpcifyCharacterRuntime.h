@@ -103,9 +103,16 @@ namespace Npcify
         void Start(std::shared_ptr<const FStagingResultPayload> Staging, bool bInStreamed, size_t InReadyBlocks, bool bComplete);
         void RecomputeDuration();
         double AvailableEnd() const;
-        /** The end of a block on the staging clock: a pending block plays to the end of its audio. */
+        /** The end of a block on its timeline: a pending block plays to the end of its audio. */
         double BlockEnd(const FStagingDialogueBlock& Block) const;
-        /** The block that plays at the current time; -1 for none. Blocks that played never start again. */
+        /** The clock time at which the active block ends: it counts from the time that it started. */
+        double ActiveEnd() const;
+        bool HasStarted(size_t Index) const;
+        bool AllBlocksStarted() const;
+        /**
+         * The block that plays at the current time; -1 for none. A block never starts again; a
+         * block that starts after its time plays from its own start.
+         */
         int FindBlockToPlay() const;
 
         FNpcifyFacialMixer& FacialMixer;
@@ -119,8 +126,14 @@ namespace Npcify
         size_t ReadyBlocks = 0;
         bool bWaiting = false;
         int ActiveBlockIndex = -1;
-        /** The first block that did not start yet. */
-        size_t NextBlockIndex = 0;
+        /** The blocks that started, by index. */
+        std::vector<bool> StartedBlocks;
+        /** The clock time at which the active block started: its local time counts from there. */
+        double ActiveStartedAt = 0.0;
+        /** The last clock time at which the active block played within its end. */
+        double ActiveSeenAt = 0.0;
+        /** The clock time at which the voice of the last block that played ended. */
+        double LastEndedAt = 0.0;
         /** The lengths in seconds of the decoded audio of blocks, by block ID. */
         std::map<std::string, double> AudioLengths;
         int NextCharIndex = 0;
