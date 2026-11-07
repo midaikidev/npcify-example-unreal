@@ -58,6 +58,11 @@ namespace Npcify
         std::function<void(const std::string& ConversationId, const FNpcifyMsgPackValue& Event)> OnStreamEvent;
         /** The result of Join: true when the server acknowledged it. */
         std::function<void(const std::string& ConversationId, bool bJoined)> OnJoinResult;
+        /**
+         * The server refused the connection or the join (CONVERSATION_ACCESS_DENIED, a connect
+         * error): a retry with the same key and conversation fails too.
+         */
+        std::function<void()> OnRefused;
         std::function<void(const std::string&)> OnLog;
 
         /** Returns false when the connection must close (close, disconnect, connect error). */
@@ -71,6 +76,7 @@ namespace Npcify
         void FailPendingJoin();
 
         bool IsConnected() const { return bConnected; }
+        bool IsRefused() const { return bRefused; }
         bool IsJoined(const std::string& ConversationId) const;
         const std::string& GetConversationId() const { return ConversationId; }
         int64_t GetPingTimeoutMs() const { return PingTimeoutMs; }
@@ -78,11 +84,13 @@ namespace Npcify
     private:
         void SendJoin();
         void Dispatch();
+        void Refuse();
 
         std::string ApiToken;
         std::string ConversationId;
         std::string JoinedConversationId;
         bool bConnected = false;
+        bool bRefused = false;
         bool bJoinPending = false;
         int64_t JoinAckId = -1;
         int64_t NextAckId = 0;

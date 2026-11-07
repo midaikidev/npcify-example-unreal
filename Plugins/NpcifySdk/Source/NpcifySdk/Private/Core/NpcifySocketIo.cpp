@@ -330,6 +330,24 @@ namespace Npcify
         }
     }
 
+    void FNpcifyConversationSession::Refuse()
+    {
+        bRefused = true;
+        if (bJoinPending)
+        {
+            bJoinPending = false;
+            JoinAckId = -1;
+            if (OnJoinResult)
+            {
+                OnJoinResult(ConversationId, false);
+            }
+        }
+        if (OnRefused)
+        {
+            OnRefused();
+        }
+    }
+
     void FNpcifyConversationSession::SendJoin()
     {
         if (!SendText || ConversationId.empty())
@@ -406,11 +424,22 @@ namespace Npcify
                 const std::string Reason = FNpcifySocketIo::ReadStringField(Packet.Json, "message");
                 OnLog("The conversation stream refused the connection: " + (Reason.empty() ? std::string("no reason") : Reason));
             }
+            Refuse();
             return false;
         case 2:
-            if (OnLog && FNpcifySocketIo::ReadEventName(Packet.Json) == "exception")
+            if (FNpcifySocketIo::ReadEventName(Packet.Json) == "exception")
             {
-                OnLog("The conversation stream reported: " + Packet.Json);
+                if (OnLog)
+                {
+                    OnLog("The conversation stream reported: " + Packet.Json);
+                }
+                // The server refuses the join of a conversation that the key cannot read (for
+                // example a rotated key) and disconnects: retrying fails the same way.
+                if (Packet.Json.find("CONVERSATION_ACCESS_DENIED") != std::string::npos)
+                {
+                    Refuse();
+                    return false;
+                }
             }
             return true;
         case 5:

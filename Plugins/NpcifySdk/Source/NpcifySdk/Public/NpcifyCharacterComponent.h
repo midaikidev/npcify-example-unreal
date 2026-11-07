@@ -434,6 +434,8 @@ private:
     TSharedPtr<FNpcifyConversationSocket> LiveMotionSocket;
     TSharedPtr<FNpcifyLiveMotionBinding> LiveMotionBinding;
     FString LiveMotionPreparedConversation;
+    /** A turn stopped waiting for the stream of this conversation; later turns do not wait for it. */
+    FString LiveMotionJoinGivenUp;
     /** The character's live motion switch from its info, once read. */
     bool bLiveMotionInfoKnown = false;
     bool bLiveMotionInEffect = false;

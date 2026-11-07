@@ -1,5 +1,8 @@
 #include "NpcifyCharacterComponent.h"
 
+#include "NpcifyConversationSocket.h"
+
+#include "Containers/Ticker.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
@@ -13,6 +16,9 @@
 
 namespace
 {
+    /** The longest time that a turn waits for the conversation stream to join. */
+    constexpr float TurnJoinWaitSeconds = 3.0f;
+
     /** RFC 4122 version 4 UUID; the server rejects other Idempotency-Key formats. */
     FString MakeUuidV4()
     {
@@ -177,16 +183,51 @@ void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr
     }
     // Live motion frames arrive on the conversation stream while the server makes the turn:
     // declare them only when the stream has joined the conversation.
+    if (LiveMotionSocket.IsValid() && LiveMotionSocket->IsJoined(ConversationIdStr))
+    {
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, true);
+        return;
+    }
+    if (LiveMotionJoinGivenUp == ConversationIdStr ||
+        (LiveMotionSocket.IsValid() &&
+            (LiveMotionSocket->IsFailing(ConversationIdStr) || LiveMotionSocket->IsRefused(ConversationIdStr))))
+    {
+        // A join that is known to fail: the turn gets prepared clips at once while the socket
+        // reconnects in the background.
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false);
+        return;
+    }
     Runtime->SetThinking(true);
     TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
     const int32 Generation = ConversationGeneration;
-    JoinLiveMotionStream(ConversationIdStr, [WeakThis, ConversationIdStr, Message, Generation](bool bJoined)
+    const TSharedRef<bool> bSent = MakeShared<bool>(false);
+    const TFunction<void(bool)> Send = [WeakThis, ConversationIdStr, Message, Generation, bSent](bool bJoined)
     {
-        if (WeakThis.IsValid() && WeakThis->ConversationGeneration == Generation)
+        if (*bSent)
         {
-            WeakThis->SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, bJoined);
+            return;
         }
-    });
+        *bSent = true;
+        if (!WeakThis.IsValid() || WeakThis->ConversationGeneration != Generation || !WeakThis->Runtime.IsValid())
+        {
+            return;
+        }
+        if (!bJoined)
+        {
+            WeakThis->LiveMotionJoinGivenUp = ConversationIdStr;
+        }
+        WeakThis->SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, bJoined);
+    };
+    JoinLiveMotionStream(ConversationIdStr, Send);
+    // A turn waits a few seconds for the stream at most; the join goes on in the background.
+    FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateLambda([Send](float)
+        {
+            Send(false);
+            return false;
+        }),
+        TurnJoinWaitSeconds
+    );
 }
 
 void UNpcifyCharacterComponent::SendCreateStagingRequest(

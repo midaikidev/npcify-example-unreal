@@ -35,6 +35,8 @@ void UNpcifyCharacterComponent::EndPlay(const EEndPlayReason::Type EndPlayReason
 {
     CancelListening();
     if (AudioComponent && AudioComponent->IsPlaying()) AudioComponent->Stop();
+    // Late responses and waiting turns of this component must not run after EndPlay.
+    ++ConversationGeneration;
     UnbindLiveMotionMesh();
     LiveMotionSocket.Reset();
     Runtime.Reset();
@@ -302,6 +304,7 @@ void UNpcifyCharacterComponent::ResetConversation()
     Runtime->ResetConversationState();
     if (LiveMotionSocket.IsValid()) LiveMotionSocket->Leave();
     LiveMotionPreparedConversation.Empty();
+    LiveMotionJoinGivenUp.Empty();
 }
 
 void UNpcifyCharacterComponent::SetEmotion(const FString& Expression, float Weight)
@@ -400,9 +403,12 @@ void UNpcifyCharacterComponent::RebuildRuntime()
 
     Runtime = MakeUnique<Npcify::FNpcifyCharacterRuntime>(Opts);
     Runtime->GetExpressions().bAutoBlinkEnabled = bAutoBlink;
-    // A new endpoint or key needs a new conversation stream.
+    // A new endpoint or key needs a new conversation stream, and the requests of the old
+    // runtime must not continue with it.
+    ++ConversationGeneration;
     LiveMotionSocket.Reset();
     LiveMotionPreparedConversation.Empty();
+    LiveMotionJoinGivenUp.Empty();
     bLiveMotionInfoKnown = false;
     Runtime->OnMotionTrackRequested = [this](const std::string& StagingId, const Npcify::FStagingMotionTrack& Track)
     {

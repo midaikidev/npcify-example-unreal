@@ -23,11 +23,23 @@ FNpcifyConversationSocket::~FNpcifyConversationSocket()
 {
     FTSTicker::RemoveTicker(TickHandle);
     DesiredConversationId.Empty();
+    // A waiting turn must not run while its owner goes away: it would send a paid turn
+    // that nobody plays.
+    Waiters.Reset();
     Shutdown(false);
 }
 
 void FNpcifyConversationSocket::Join(const FString& ConversationId, TFunction<void(bool)> OnDone)
 {
+    if (IsRefused(ConversationId))
+    {
+        // The server refused this conversation with this key; a retry fails the same way.
+        if (OnDone)
+        {
+            OnDone(false);
+        }
+        return;
+    }
     DesiredConversationId = ConversationId;
     if (IsJoined(ConversationId))
     {
@@ -56,9 +68,22 @@ bool FNpcifyConversationSocket::IsJoined(const FString& ConversationId) const
         Session->IsJoined(TCHAR_TO_UTF8(*ConversationId));
 }
 
+bool FNpcifyConversationSocket::IsFailing(const FString& ConversationId) const
+{
+    return !ConversationId.IsEmpty() && FailedConversationId == ConversationId && !IsJoined(ConversationId);
+}
+
+bool FNpcifyConversationSocket::IsRefused(const FString& ConversationId) const
+{
+    return !ConversationId.IsEmpty() && RefusedConversationId == ConversationId;
+}
+
 void FNpcifyConversationSocket::Leave()
 {
     DesiredConversationId.Empty();
+    FailedConversationId.Empty();
+    // An explicit leave also allows a refused conversation to try again.
+    RefusedConversationId.Empty();
     if (Session.IsValid())
     {
         Session->Leave();
@@ -96,6 +121,16 @@ void FNpcifyConversationSocket::Open()
                 Self->ReconnectAttempt = 0;
             }
             Self->FinishWaiters(bJoined);
+        }
+    };
+    Session->OnRefused = [Weak]()
+    {
+        const TSharedPtr<FNpcifyConversationSocket> Self = Weak.Pin();
+        if (Self.IsValid())
+        {
+            // Close outside the socket's own callback, without a reconnect.
+            Self->bRefusedNow = true;
+            Self->ReconnectAt = -1.0;
         }
     };
     Session->OnLog = [Weak](const std::string& Message)
@@ -197,13 +232,30 @@ bool FNpcifyConversationSocket::Tick(float)
     if (ReconnectAt < 0.0)
     {
         // The socket closed or failed in one of its callbacks.
+        if (bRefusedNow)
+        {
+            bRefusedNow = false;
+            RefusedConversationId = DesiredConversationId;
+            DesiredConversationId.Empty();
+            if (OnLog)
+            {
+                OnLog(TEXT("The conversation stream refused the conversation; no retry for it."));
+            }
+            Shutdown(false);
+            return true;
+        }
         Shutdown(true);
         return true;
     }
-    if (Session.IsValid() && Waiters.Num() > 0 && Now > JoinDeadline)
+    if (Session.IsValid() && !DesiredConversationId.IsEmpty() &&
+        !Session->IsJoined(TCHAR_TO_UTF8(*DesiredConversationId)) && Now > JoinDeadline)
     {
+        // No acknowledgement in time (also for a join that no turn waits for, so that the
+        // conversation counts as failing): a late one would not count, so connect again.
         Session->FailPendingJoin();
         FinishWaiters(false);
+        Shutdown(true);
+        return true;
     }
     if (Socket.IsValid() && Session.IsValid() && Session->IsConnected() &&
         (Now - LastReceived) * 1000.0 > static_cast<double>(Session->GetPingTimeoutMs()))
@@ -226,6 +278,16 @@ bool FNpcifyConversationSocket::Tick(float)
 
 void FNpcifyConversationSocket::FinishWaiters(bool bJoined)
 {
+    // A failed join (or a lost connection) marks the conversation as failing, so turns stop
+    // waiting for it while the socket reconnects in the background.
+    if (bJoined)
+    {
+        FailedConversationId.Empty();
+    }
+    else if (!DesiredConversationId.IsEmpty())
+    {
+        FailedConversationId = DesiredConversationId;
+    }
     TArray<TFunction<void(bool)>> Done = MoveTemp(Waiters);
     Waiters.Reset();
     for (TFunction<void(bool)>& Waiter : Done)

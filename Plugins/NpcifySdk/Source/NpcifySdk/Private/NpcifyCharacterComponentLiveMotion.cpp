@@ -174,6 +174,12 @@ void UNpcifyCharacterComponent::PrepareLiveMotion()
     {
         return;
     }
+    if (LiveMotionSocket.IsValid() &&
+        (LiveMotionSocket->IsRefused(ConversationIdStr) || LiveMotionSocket->IsFailing(ConversationIdStr)))
+    {
+        // The frames could not reach this client: a warm-up would cost the owner for nothing.
+        return;
+    }
     LiveMotionPreparedConversation = ConversationIdStr;
     // Join the stream now, so that the first reply does not wait for it.
     JoinLiveMotionStream(ConversationIdStr, nullptr);

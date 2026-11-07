@@ -144,7 +144,12 @@ prepared animation clips (`OnAnimationRequested`).
   time of the first played frame), `OnLiveMotionFrames` and
   `GetHumanoidBoneName(VrmBone)`.
 - **Transport:** the frames come on the conversation stream (Socket.IO over the
-  engine's `WebSockets` module).
+  engine's `WebSockets` module). A turn declares the frames only when the
+  stream has joined the conversation, and waits for the join for 3 s at most.
+  After that time, or at once while the stream fails, the turn plays the
+  prepared clips and the stream connects again in the background. The SDK
+  does not try again a conversation that the server refuses (for example
+  after you rotate the API key).
 
 ## Spatial Voice
 

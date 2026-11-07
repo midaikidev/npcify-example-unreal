@@ -25,9 +25,16 @@ public:
     TFunction<void(const Npcify::FNpcifyMsgPackValue&)> OnStreamEvent;
     TFunction<void(const FString&)> OnLog;
 
-    /** Joins the room; OnDone(true) after the acknowledgement, false after a failure or 10 s. */
+    /**
+     * Joins the room; OnDone(true) after the acknowledgement, false after a failure or 10 s.
+     * A conversation that the server refused gets false at once.
+     */
     void Join(const FString& ConversationId, TFunction<void(bool)> OnDone);
     bool IsJoined(const FString& ConversationId) const;
+    /** The last join of this conversation failed; the socket reconnects in the background. */
+    bool IsFailing(const FString& ConversationId) const;
+    /** The server refused this conversation (for example a rotated key): no retry for it. */
+    bool IsRefused(const FString& ConversationId) const;
     void Leave();
 
 private:
@@ -42,6 +49,9 @@ private:
     TUniquePtr<Npcify::FNpcifyConversationSession> Session;
     TArray<uint8> BinaryBuffer;
     FString DesiredConversationId;
+    FString FailedConversationId;
+    FString RefusedConversationId;
+    bool bRefusedNow = false;
     TArray<TFunction<void(bool)>> Waiters;
     FTSTicker::FDelegateHandle TickHandle;
     double JoinDeadline = 0.0;
