@@ -52,6 +52,8 @@ private:
     FString FailedConversationId;
     FString RefusedConversationId;
     bool bRefusedNow = false;
+    /** The conversation of the refusal that the next Tick handles. */
+    FString RefusedNowId;
     TArray<TFunction<void(bool)>> Waiters;
     FTSTicker::FDelegateHandle TickHandle;
     double JoinDeadline = 0.0;

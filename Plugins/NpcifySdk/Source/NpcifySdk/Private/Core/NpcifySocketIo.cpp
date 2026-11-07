@@ -230,6 +230,18 @@ namespace Npcify
         return Index != std::string::npos && Json.compare(Index, 4, "true") == 0;
     }
 
+    std::string FNpcifySocketIo::ReadCauseConversationId(const std::string& Json)
+    {
+        const size_t Cause = FindValue(Json, "cause");
+        if (Cause == std::string::npos)
+        {
+            return std::string();
+        }
+        const std::string CauseJson = Json.substr(Cause);
+        const size_t Data = FindValue(CauseJson, "data");
+        return Data == std::string::npos ? std::string() : ReadStringField(CauseJson.substr(Data), "conversationId");
+    }
+
     std::string FNpcifySocketIo::JsonString(const std::string& Value)
     {
         std::string Out = "\"";
@@ -330,9 +342,10 @@ namespace Npcify
         }
     }
 
-    void FNpcifyConversationSession::Refuse()
+    void FNpcifyConversationSession::Refuse(const std::string& InRefusedConversationId)
     {
         bRefused = true;
+        RefusedConversationId = InRefusedConversationId;
         if (bJoinPending)
         {
             bJoinPending = false;
@@ -424,7 +437,7 @@ namespace Npcify
                 const std::string Reason = FNpcifySocketIo::ReadStringField(Packet.Json, "message");
                 OnLog("The conversation stream refused the connection: " + (Reason.empty() ? std::string("no reason") : Reason));
             }
-            Refuse();
+            Refuse(ConversationId);
             return false;
         case 2:
             if (FNpcifySocketIo::ReadEventName(Packet.Json) == "exception")
@@ -434,10 +447,20 @@ namespace Npcify
                     OnLog("The conversation stream reported: " + Packet.Json);
                 }
                 // The server refuses the join of a conversation that the key cannot read (for
-                // example a rotated key) and disconnects: retrying fails the same way.
+                // example a rotated key) and disconnects: retrying fails the same way. The refusal
+                // of a conversation that the session no longer wants changes nothing.
                 if (Packet.Json.find("CONVERSATION_ACCESS_DENIED") != std::string::npos)
                 {
-                    Refuse();
+                    const std::string Named = FNpcifySocketIo::ReadCauseConversationId(Packet.Json);
+                    if (!Named.empty() && Named != ConversationId)
+                    {
+                        if (OnLog)
+                        {
+                            OnLog("The refusal names a conversation that is no longer wanted: it changes nothing.");
+                        }
+                        return true;
+                    }
+                    Refuse(ConversationId);
                     return false;
                 }
             }

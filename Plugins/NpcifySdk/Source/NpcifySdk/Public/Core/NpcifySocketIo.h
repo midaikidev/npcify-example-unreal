@@ -38,6 +38,11 @@ namespace Npcify
         static int64_t ReadNumber(const std::string& Json, const std::string& Key, int64_t Fallback);
         static std::string ReadStringField(const std::string& Json, const std::string& Key);
         static bool ReadTrue(const std::string& Json, const std::string& Key);
+        /**
+         * The conversation that an exception event names: cause.data.conversationId of a refused
+         * conversations:join, or an empty string when the event names none.
+         */
+        static std::string ReadCauseConversationId(const std::string& Json);
         static std::string JsonString(const std::string& Value);
         /** The Socket.IO URL of an API base URL (its origin; the path is not used). */
         static std::string BuildUrl(const std::string& BaseUrl);
@@ -64,7 +69,10 @@ namespace Npcify
         std::function<void(const std::string& ConversationId, bool bJoined)> OnJoinResult;
         /**
          * The server refused the connection or the join (CONVERSATION_ACCESS_DENIED, a connect
-         * error): a retry with the same key and conversation fails too.
+         * error): a retry with the same key and conversation fails too. GetRefusedConversationId
+         * names the refused conversation. A refusal that names a conversation that the session no
+         * longer wants (Leave, or Join of another one, while the server looked it up) changes
+         * nothing: the server disconnects, and the engine connects again for the wanted one.
          */
         std::function<void()> OnRefused;
         std::function<void(const std::string&)> OnLog;
@@ -88,6 +96,8 @@ namespace Npcify
 
         bool IsConnected() const { return bConnected; }
         bool IsRefused() const { return bRefused; }
+        /** The conversation of the refusal: the one that the refusal names, else the one wanted then. */
+        const std::string& GetRefusedConversationId() const { return RefusedConversationId; }
         bool IsJoined(const std::string& ConversationId) const;
         const std::string& GetConversationId() const { return ConversationId; }
         int64_t GetPingTimeoutMs() const { return PingTimeoutMs; }
@@ -103,13 +113,14 @@ namespace Npcify
         void SendJoin();
         void PairAttachments();
         void Dispatch(FBinaryEvent Binary);
-        void Refuse();
+        void Refuse(const std::string& InRefusedConversationId);
 
         std::string ApiToken;
         std::string ConversationId;
         std::string JoinedConversationId;
         bool bConnected = false;
         bool bRefused = false;
+        std::string RefusedConversationId;
         bool bJoinPending = false;
         int64_t JoinAckId = -1;
         int64_t NextAckId = 0;

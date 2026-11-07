@@ -128,8 +128,12 @@ void FNpcifyConversationSocket::Open()
         const TSharedPtr<FNpcifyConversationSocket> Self = Weak.Pin();
         if (Self.IsValid())
         {
-            // Close outside the socket's own callback, without a reconnect.
+            // Close outside the socket's own callback. The conversation of the refusal is the one
+            // that the session wanted at that moment: the game can join another before the Tick.
             Self->bRefusedNow = true;
+            Self->RefusedNowId = Self->Session.IsValid()
+                ? FString(UTF8_TO_TCHAR(Self->Session->GetRefusedConversationId().c_str()))
+                : FString();
             Self->ReconnectAt = -1.0;
         }
     };
@@ -239,14 +243,22 @@ bool FNpcifyConversationSocket::Tick(float)
         if (bRefusedNow)
         {
             bRefusedNow = false;
-            RefusedConversationId = DesiredConversationId;
-            DesiredConversationId.Empty();
+            if (!RefusedNowId.IsEmpty() && RefusedNowId == DesiredConversationId)
+            {
+                RefusedConversationId = DesiredConversationId;
+                DesiredConversationId.Empty();
+                if (OnLog)
+                {
+                    OnLog(TEXT("The conversation stream refused the conversation; no retry for it."));
+                }
+                Shutdown(false);
+                return true;
+            }
+            // The game left the refused conversation meanwhile: connect again for the wanted one.
             if (OnLog)
             {
-                OnLog(TEXT("The conversation stream refused the conversation; no retry for it."));
+                OnLog(TEXT("The conversation stream refused a conversation that is no longer wanted."));
             }
-            Shutdown(false);
-            return true;
         }
         Shutdown(true);
         return true;

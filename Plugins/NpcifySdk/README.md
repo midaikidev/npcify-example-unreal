@@ -205,7 +205,8 @@ prepared animation clips (`OnAnimationRequested`).
   refuses the conversation (for example after you rotate the API key), the
   stream stops its attempts for that conversation, and the turns keep the
   prepared clips until the next conversation (`ResetConversation` or another
-  conversation ID).
+  conversation ID). The refusal of a conversation that you left while the
+  server checked it does not stop the next conversation.
 
 ## Spatial Voice
 
