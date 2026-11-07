@@ -45,6 +45,11 @@ namespace Npcify
             static std::atomic<uint64_t> Counter{0};
             return ++Counter;
         }
+
+        bool IsFinalStop(ENpcifyTurnStop Reason)
+        {
+            return Reason == ENpcifyTurnStop::Game || Reason == ENpcifyTurnStop::Superseded;
+        }
     }
 
     std::string FNpcifyStreamTurn::NormalizeTaskId(std::string Text)
@@ -67,11 +72,23 @@ namespace Npcify
 
     ENpcifyStreamChange FNpcifyStreamTurn::Apply(const FNpcifyMsgPackValue& Event)
     {
-        if (bStopped || !Event.IsMap())
+        if (!Event.IsMap())
         {
             return ENpcifyStreamChange::None;
         }
         const std::string Type = EventString(Event, "type");
+        const bool bRerun = Type == "start" && bRunStarted;
+        // Each run of the turn sends its start event first.
+        bRunStarted = true;
+        if (bRerun && !IsFinalStop(StopReason))
+        {
+            // A retried request runs the turn again under the same task ID.
+            return ENpcifyStreamChange::Restarted;
+        }
+        if (IsStopped())
+        {
+            return ENpcifyStreamChange::None;
+        }
         if (Type == "start")
         {
             AdoptStagingId(Event);
@@ -104,7 +121,7 @@ namespace Npcify
         }
         else if (Type == "error")
         {
-            Fail();
+            Stop(ENpcifyTurnStop::Failed);
             return ENpcifyStreamChange::Failed;
         }
         return ENpcifyStreamChange::None;
@@ -112,7 +129,11 @@ namespace Npcify
 
     bool FNpcifyStreamTurn::ApplyResult(const FStagingResultPayload& Result)
     {
-        if (!bHasTimeline)
+        if (StopReason == ENpcifyTurnStop::Rejected)
+        {
+            throw std::runtime_error(ChangedDialogueMessage);
+        }
+        if (StopReason == ENpcifyTurnStop::Failed || (!bHasTimeline && !IsStopped()))
         {
             return false;
         }
@@ -122,8 +143,11 @@ namespace Npcify
         Payload->Text = Result.Text;
         Payload->Options = Result.Options;
         bHasFinal = true;
-        if (bStopped)
+        if (IsStopped())
         {
+            // The game stopped the reply, or a newer reply replaced it: it does not play again.
+            Payload->Timeline = Result.Timeline;
+            bComplete = true;
             return true;
         }
         std::vector<FStagingDialogueBlock>& Dialogue = Payload->Timeline.Dialogue;
@@ -165,7 +189,7 @@ namespace Npcify
     std::vector<std::pair<std::string, std::string>> FNpcifyStreamTurn::TakeAudioDownloads()
     {
         std::vector<std::pair<std::string, std::string>> Downloads;
-        if (bStopped)
+        if (IsStopped())
         {
             return Downloads;
         }
@@ -193,6 +217,36 @@ namespace Npcify
             ++Count;
         }
         return Count;
+    }
+
+    void FNpcifyStreamTurn::Stop(ENpcifyTurnStop Reason)
+    {
+        if (Reason != ENpcifyTurnStop::None && (!IsFinalStop(StopReason) || Reason == ENpcifyTurnStop::Game))
+        {
+            StopReason = Reason;
+        }
+        bEndPending = false;
+    }
+
+    void FNpcifyStreamTurn::Restart(const FNpcifyMsgPackValue& StartEvent)
+    {
+        Audio.clear();
+        Requested.clear();
+        Silent.clear();
+        Revision = 0;
+        StopReason = ENpcifyTurnStop::None;
+        bHasTimeline = false;
+        bComplete = false;
+        bHasFinal = false;
+        bPlaybackStarted = false;
+        bRunStarted = true;
+        bEndPending = false;
+        Noted = 0;
+        // A new object: the first run's staging stays as the game got it.
+        Payload = std::make_shared<FStagingResultPayload>();
+        Payload->ProtocolVersion = 1;
+        Payload->TaskId = TaskId;
+        AdoptStagingId(StartEvent);
     }
 
     bool FNpcifyStreamTurn::HasPlayableAudio(const FStagingDialogueBlock& Block)
@@ -393,7 +447,7 @@ namespace Npcify
         }
         if (!bValid)
         {
-            Fail();
+            Stop(ENpcifyTurnStop::Rejected);
             throw std::runtime_error(ChangedDialogueMessage);
         }
         for (size_t Index = 0; Index < Dialogue.size(); ++Index)

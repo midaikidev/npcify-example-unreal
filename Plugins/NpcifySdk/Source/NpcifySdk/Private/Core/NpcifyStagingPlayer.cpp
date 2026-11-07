@@ -22,6 +22,28 @@ namespace Npcify
         }
     }
 
+    void FNpcifyPlayedClips::Clear()
+    {
+        Keys.clear();
+        Spans.clear();
+    }
+
+    bool FNpcifyPlayedClips::Add(const std::string& Id, const std::string& Name, double StartTime, double EndTime, bool bMatchMoved)
+    {
+        bool bMoved = false;
+        for (size_t Index = 0; bMatchMoved && !bMoved && Index < Spans.size(); ++Index)
+        {
+            const FSpan& Span = Spans[Index];
+            bMoved = Span.Name == Name && Span.Start < EndTime && StartTime < Span.End;
+        }
+        if (!Keys.insert(ClipKey(Id, Name, StartTime)).second)
+        {
+            return false;
+        }
+        Spans.push_back(FSpan{Name, StartTime, EndTime});
+        return !bMoved;
+    }
+
     FNpcifyStagingPlayer::FNpcifyStagingPlayer(
         FNpcifyFacialMixer& InFacialMixer,
         FNpcifyVisemePlayer& InVisemePlayer
@@ -85,14 +107,14 @@ namespace Npcify
         {
             if (Clip.EndTime <= CurrentTimeSeconds)
             {
-                TriggeredExpressionIds.insert(ClipKey(Clip.Id, Clip.Expression, Clip.StartTime));
+                PlayedExpressions.Add(Clip.Id, Clip.Expression, Clip.StartTime, Clip.EndTime, false);
             }
         }
         for (const FStagingAnimationClip& Clip : Timeline.Animations)
         {
             if (Clip.EndTime <= CurrentTimeSeconds)
             {
-                TriggeredAnimationIds.insert(ClipKey(Clip.Id, Clip.Animation, Clip.StartTime));
+                PlayedAnimations.Add(Clip.Id, Clip.Animation, Clip.StartTime, Clip.EndTime, false);
             }
         }
     }
@@ -162,8 +184,8 @@ namespace Npcify
         bIsPlaying = false;
         bStreamed = false;
         bWaiting = false;
-        TriggeredExpressionIds.clear();
-        TriggeredAnimationIds.clear();
+        PlayedExpressions.Clear();
+        PlayedAnimations.Clear();
         VisemePlayer.Clear();
         FacialMixer.ClearVisemes();
     }
@@ -188,8 +210,9 @@ namespace Npcify
         for (size_t i = 0; i < Timeline.Expressions.size(); ++i)
         {
             const auto& Clip = Timeline.Expressions[i];
+            // Revisions of a streamed staging can move clips that played.
             if (CurrentTimeSeconds >= Clip.StartTime &&
-                TriggeredExpressionIds.insert(ClipKey(Clip.Id, Clip.Expression, Clip.StartTime)).second)
+                PlayedExpressions.Add(Clip.Id, Clip.Expression, Clip.StartTime, Clip.EndTime, bStreamed))
             {
                 // A clip that a revision added after its start plays for the rest of its time.
                 const float Dur = static_cast<float>(std::max(0.2, Clip.EndTime - std::max(Clip.StartTime, CurrentTimeSeconds)));
@@ -202,7 +225,7 @@ namespace Npcify
         {
             const auto& Clip = Timeline.Animations[i];
             if (CurrentTimeSeconds >= Clip.StartTime &&
-                TriggeredAnimationIds.insert(ClipKey(Clip.Id, Clip.Animation, Clip.StartTime)).second)
+                PlayedAnimations.Add(Clip.Id, Clip.Animation, Clip.StartTime, Clip.EndTime, bStreamed))
             {
                 if (OnAnimationClipTriggered) OnAnimationClipTriggered(Clip);
             }

@@ -69,9 +69,16 @@ namespace Npcify
         std::function<void()> OnRefused;
         std::function<void(const std::string&)> OnLog;
 
-        /** Returns false when the connection must close (close, disconnect, connect error). */
+        /**
+         * Returns false when the connection must close (close, disconnect, connect error, or
+         * more than MaxUnpaired binary events or attachments that wait for their other part).
+         */
         bool HandleText(const std::string& Text);
-        void HandleBinary(const uint8_t* Data, size_t Size);
+        /** Returns false when the connection must close: see HandleText. */
+        bool HandleBinary(const uint8_t* Data, size_t Size);
+
+        /** Binary event headers, or attachments, that can wait for their other part. */
+        static constexpr size_t MaxUnpaired = 1024;
 
         /** Joins a room; before the CONNECT acknowledgement it joins after it. */
         void Join(const std::string& ConversationId);

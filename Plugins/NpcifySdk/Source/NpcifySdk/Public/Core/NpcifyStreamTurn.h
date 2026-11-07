@@ -21,6 +21,25 @@ namespace Npcify
         Audio,
         Final,
         Failed,
+        /** A second start event: the server runs the turn again (a retried request). */
+        Restarted,
+    };
+
+    /**
+     * Why a turn plays no more. Game and Superseded are final; after Rejected or Failed, a rerun
+     * of the turn (a retried request) can start it again.
+     */
+    enum class ENpcifyTurnStop : uint8_t
+    {
+        None,
+        /** The game stopped the speech (StopSpeaking, a new conversation). */
+        Game,
+        /** A newer reply plays, or the HTTP result plays as a whole. */
+        Superseded,
+        /** The SDK refused a revision that changed published dialogue. */
+        Rejected,
+        /** The server sent an error event, or the request failed. */
+        Failed,
     };
 
     /**
@@ -50,9 +69,10 @@ namespace Npcify
         bool IsComplete() const { return bComplete; }
         /** The options and the text are known (the options event or the HTTP result). */
         bool HasFinal() const { return bHasFinal; }
-        bool IsFailed() const { return bFailed; }
-        /** The turn plays no more: stopped, replaced by a newer reply, or failed. */
-        bool IsStopped() const { return bStopped; }
+        ENpcifyTurnStop GetStopReason() const { return StopReason; }
+        bool IsFailed() const { return StopReason == ENpcifyTurnStop::Failed || StopReason == ENpcifyTurnStop::Rejected; }
+        /** The turn plays no more: stopped, replaced by a newer reply, refused or failed. */
+        bool IsStopped() const { return StopReason != ENpcifyTurnStop::None; }
         bool IsPlaybackStarted() const { return bPlaybackStarted; }
 
         /** The playback ended before the options were known; OnSpeechEnd waits for them. */
@@ -71,8 +91,12 @@ namespace Npcify
         ENpcifyStreamChange Apply(const FNpcifyMsgPackValue& Event);
 
         /**
-         * Applies the HTTP result. Returns false when no revision arrived: the result then plays
-         * as a whole. Speech whose stream did not complete takes the stored audio of the result.
+         * Applies the HTTP result. Returns false when the result plays as a whole: no revision
+         * arrived, or the server failed the stream (a rerun whose events did not arrive). A turn
+         * that the game stopped or that a newer reply replaced does not play again: it takes the
+         * complete staging of the result. Speech whose stream did not complete takes the stored
+         * audio of the result. Throws std::runtime_error when the result changes published
+         * dialogue, or when the SDK refused a revision of this turn.
          */
         bool ApplyResult(const FStagingResultPayload& Result);
 
@@ -84,18 +108,16 @@ namespace Npcify
 
         /** The number of leading dialogue blocks that can play. */
         size_t CountReadyBlocks() const;
+        /** The dialogue is complete and every block can play: the stream delivered the whole reply. */
+        bool AreAllBlocksReady() const { return bComplete && CountReadyBlocks() == Payload->Timeline.Dialogue.size(); }
 
         void MarkStarted() { bPlaybackStarted = true; }
-        void Stop()
-        {
-            bStopped = true;
-            bEndPending = false;
-        }
-        void Fail()
-        {
-            bFailed = true;
-            Stop();
-        }
+        void Stop(ENpcifyTurnStop Reason);
+        /**
+         * The server runs the turn again (a retried request): the turn forgets the first run and
+         * applies the new run from its start event, in a new staging object.
+         */
+        void Restart(const FNpcifyMsgPackValue& StartEvent);
 
         /** A pause, silent speech, or speech whose audio bytes are complete. */
         static bool HasPlayableAudio(const FStagingDialogueBlock& Block);
@@ -131,11 +153,12 @@ namespace Npcify
         std::set<std::string> Requested;
         std::set<std::string> Silent;
         int64_t Revision = 0;
+        ENpcifyTurnStop StopReason = ENpcifyTurnStop::None;
         bool bHasTimeline = false;
         bool bComplete = false;
         bool bHasFinal = false;
-        bool bFailed = false;
-        bool bStopped = false;
         bool bPlaybackStarted = false;
+        /** A start event arrived: a later one means that the server runs the turn again. */
+        bool bRunStarted = false;
     };
 }

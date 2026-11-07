@@ -30,6 +30,31 @@ namespace Npcify
         }
     };
 
+    /**
+     * The expression or animation clips of a staging that played. A clip is known by its ID, or
+     * by its name and start time. In a streamed staging, a revision can move a clip that played
+     * (the beats of a pending speech block take new times when more of the block is aligned):
+     * there, a clip with the same name whose time overlaps a clip that played is that clip.
+     */
+    class FNpcifyPlayedClips
+    {
+    public:
+        void Clear();
+        /** Records the clip; true when it did not play yet. bMatchMoved: a moved clip counts as played. */
+        bool Add(const std::string& Id, const std::string& Name, double StartTime, double EndTime, bool bMatchMoved);
+
+    private:
+        struct FSpan
+        {
+            std::string Name;
+            double Start = 0.0;
+            double End = 0.0;
+        };
+
+        std::set<std::string> Keys;
+        std::vector<FSpan> Spans;
+    };
+
     class FNpcifyStagingPlayer
     {
     public:
@@ -76,8 +101,8 @@ namespace Npcify
 
         FNpcifyFacialMixer& FacialMixer;
         FNpcifyVisemePlayer& VisemePlayer;
-        std::set<std::string> TriggeredExpressionIds;
-        std::set<std::string> TriggeredAnimationIds;
+        FNpcifyPlayedClips PlayedExpressions;
+        FNpcifyPlayedClips PlayedAnimations;
 
         std::shared_ptr<const FStagingResultPayload> ActiveStaging;
         bool bStreamed = false;
@@ -203,10 +228,14 @@ namespace Npcify
         void HandleDialogueBlockStarted(const FStagingDialogueBlock& Block);
         void HandleStagingCompleted(const FStagingResultPayload& Staging);
         std::shared_ptr<FNpcifyStreamTurn> FindTurn(const std::string& TaskId) const;
+        void RestartTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& StartEvent);
         void PumpTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
         void StartStreamPlayback(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
-        void EndTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
+        void SupersedeOlderTurns(uint64_t Sequence);
+        void StopPlayingTurn(ENpcifyTurnStop Reason);
+        void EndTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, ENpcifyTurnStop Reason);
         void ForgetClosedTurns();
+        void SettleThinking();
         void NoteTurn(const FNpcifyStreamTurn& Turn, const std::string& Message) const;
         void NoteMilestones(FNpcifyStreamTurn& Turn) const;
         void StopStreamTurns();
@@ -217,9 +246,11 @@ namespace Npcify
         FNpcifyStagingPlayer StagingPlayer;
         FNpcifyLiveMotionPlayer LiveMotion;
         std::unique_ptr<FNpcifyBakedConversation> BakedConversation;
-        /** Streamed turns that can still start to play, oldest first, and the turn that plays. */
+        /** Turns in progress, oldest first: an open request, or a reply that waits for its first block. */
         std::vector<std::shared_ptr<FNpcifyStreamTurn>> StreamTurns;
         std::shared_ptr<FNpcifyStreamTurn> PlayingTurn;
+        /** The request order of the newest reply that started to play: an older reply never plays over it. */
+        uint64_t PlayedSequence = 0;
 
         std::string ConversationId;
         std::string ActiveStagingId;

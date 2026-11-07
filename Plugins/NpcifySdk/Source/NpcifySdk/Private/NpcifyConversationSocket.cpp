@@ -190,8 +190,12 @@ void FNpcifyConversationSocket::Open()
         Self->BinaryBuffer.Append(static_cast<const uint8*>(Data), static_cast<int32>(Size));
         if (bIsLastFragment)
         {
-            Self->Session->HandleBinary(Self->BinaryBuffer.GetData(), static_cast<size_t>(Self->BinaryBuffer.Num()));
+            const bool bKeep = Self->Session->HandleBinary(Self->BinaryBuffer.GetData(), static_cast<size_t>(Self->BinaryBuffer.Num()));
             Self->BinaryBuffer.Reset();
+            if (!bKeep)
+            {
+                Self->ReconnectAt = -1.0;
+            }
         }
     });
     Socket->Connect();

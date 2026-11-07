@@ -451,12 +451,19 @@ namespace Npcify
             if (Event.Expected <= 0)
             {
                 Dispatch(std::move(Event));
+                return true;
             }
-            else if (BinaryEvents.size() < 1024)
+            if (BinaryEvents.size() >= MaxUnpaired)
             {
-                BinaryEvents.push_back(std::move(Event));
-                PairAttachments();
+                // A lost header would pair every later attachment with the wrong event.
+                if (OnLog)
+                {
+                    OnLog("The conversation stream sent too many binary events without their data; it connects again.");
+                }
+                return false;
             }
+            BinaryEvents.push_back(std::move(Event));
+            PairAttachments();
             return true;
         }
         default:
@@ -464,13 +471,20 @@ namespace Npcify
         }
     }
 
-    void FNpcifyConversationSession::HandleBinary(const uint8_t* Data, size_t Size)
+    bool FNpcifyConversationSession::HandleBinary(const uint8_t* Data, size_t Size)
     {
-        if (Attachments.size() < 1024)
+        if (Attachments.size() >= MaxUnpaired)
         {
-            Attachments.emplace_back(Data, Data + Size);
+            // A lost attachment would pair every later header with the wrong data.
+            if (OnLog)
+            {
+                OnLog("The conversation stream sent too much binary data without its events; it connects again.");
+            }
+            return false;
         }
+        Attachments.emplace_back(Data, Data + Size);
         PairAttachments();
+        return true;
     }
 
     void FNpcifyConversationSession::PairAttachments()

@@ -110,6 +110,8 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::ResetConversationState()
     {
+        // A reply that played to its end and waits for its options still ends.
+        StopPlayingTurn(ENpcifyTurnStop::Game);
         StopStreamTurns();
         StagingPlayer.Stop();
         bThinking = false;
@@ -124,11 +126,7 @@ namespace Npcify
     void FNpcifyCharacterRuntime::PlayStaging(const FStagingResultPayload& Staging)
     {
         // A staging played as a whole replaces a streamed reply.
-        if (PlayingTurn)
-        {
-            PlayingTurn->Stop();
-            PlayingTurn.reset();
-        }
+        StopPlayingTurn(ENpcifyTurnStop::Superseded);
         bThinking = false;
         ActiveStagingId = Staging.StagingId;
         LastOptions = Staging.Options;
@@ -159,11 +157,8 @@ namespace Npcify
     void FNpcifyCharacterRuntime::StopSpeaking()
     {
         bThinking = false;
-        if (PlayingTurn)
-        {
-            PlayingTurn->Stop();
-            PlayingTurn.reset();
-        }
+        // A reply that played to its end and waits for its options still ends.
+        StopPlayingTurn(ENpcifyTurnStop::Game);
         StagingPlayer.Stop();
     }
 

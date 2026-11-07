@@ -330,12 +330,13 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                 const TArray<uint8>& Content = Response->GetContent();
                 std::vector<uint8_t> Bytes(Content.GetData(), Content.GetData() + Content.Num());
                 const Npcify::FStagingResultPayload Staging = Npcify::FNpcifySchemaMapper::DecodeStaging(Bytes);
-                Self->Runtime->SetActiveStagingId(Staging.StagingId);
-                // The stream plays the reply already: the result only completes it.
+                // The stream plays the reply already (the result only completes it), or a newer
+                // reply plays: the runtime keeps the active staging of the conversation.
                 if (bStreamed && Self->Runtime->HandleTurnResult(TaskId, Staging))
                 {
                     return;
                 }
+                Self->Runtime->SetActiveStagingId(Staging.StagingId);
                 Self->PrepareAndPlayStaging(Staging);
             }
             catch (const std::exception& Ex)

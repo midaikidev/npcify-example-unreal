@@ -86,9 +86,13 @@ a gap and without a repeated block.
   known at that time. `OnSpeechEnd` fires once, after the last block and when
   the reply options are known, so `GetCurrentReplyOptions()` gives them.
 - **Fallback:** without the stream (no join in time, a lost connection, an older
-  server) the reply plays after its HTTP result, as before 0.6.0. A stream error
-  stops the reply; `OnError` then reports the failed request. `StopSpeaking()`
-  stops a streamed reply for good.
+  server) the reply plays after its HTTP result, as before 0.6.0.
+  `StopSpeaking()` stops a streamed reply for good.
+- **Failures:** the failed request is the failure of the turn, and `OnError`
+  reports it. An `error` event of the stream only stops the reply earlier; the
+  server does not send one for every failure. When the component retries the
+  request and the server runs the turn again, the new run plays from its start.
+  An older reply never plays over a newer one.
 - **Options:** `bStreamReplies` turns streaming off. The log category
   `LogNpcifyStream` reports when the first revision, the first audio and the
   playback of each streamed reply came.
@@ -179,9 +183,11 @@ prepared animation clips (`OnAnimationRequested`).
   frames only when the stream has joined the conversation, and waits for the
   join for 3 s at most.
   After that time, or at once while the stream fails, the turn plays the
-  prepared clips and the stream connects again in the background. The SDK
-  does not try again a conversation that the server refuses (for example
-  after you rotate the API key).
+  prepared clips and the stream connects again in the background, with a wait
+  of at most 10 s between attempts while the component lives. A conversation
+  that the server refuses (for example after you rotate the API key) looks
+  like a lost connection: the server closes the connection before its refusal
+  arrives, so the turns keep the prepared clips.
 
 ## Spatial Voice
 
