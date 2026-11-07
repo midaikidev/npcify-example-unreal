@@ -53,7 +53,7 @@ namespace
     }
 }
 
-void UNpcifyCharacterComponent::PrepareAndPlayStaging(const Npcify::FStagingResultPayload& Staging)
+void UNpcifyCharacterComponent::PrepareAndPlayStaging(const Npcify::FStagingResultPayload& Staging, uint64_t PlaySequence)
 {
     TSharedRef<Npcify::FStagingResultPayload> Shared = MakeShared<Npcify::FStagingResultPayload>(Staging);
     TArray<int32> Pending;
@@ -64,7 +64,7 @@ void UNpcifyCharacterComponent::PrepareAndPlayStaging(const Npcify::FStagingResu
     }
     if (Pending.Num() == 0)
     {
-        Runtime->PlayStaging(*Shared);
+        Runtime->PlayTurnStaging(*Shared, PlaySequence);
         return;
     }
 
@@ -79,7 +79,7 @@ void UNpcifyCharacterComponent::PrepareAndPlayStaging(const Npcify::FStagingResu
         HttpRequest->SetURL(UTF8_TO_TCHAR(Shared->Timeline.Dialogue[Index].Audio.Url.c_str()));
         HttpRequest->SetVerb(TEXT("GET"));
         HttpRequest->OnProcessRequestComplete().BindLambda(
-            [WeakThis, Shared, Remaining, Index, Generation](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
+            [WeakThis, Shared, Remaining, Index, Generation, PlaySequence](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
             {
                 if (!WeakThis.IsValid() || WeakThis->ConversationGeneration != Generation) return;
                 UNpcifyCharacterComponent* Self = WeakThis.Get();
@@ -93,7 +93,8 @@ void UNpcifyCharacterComponent::PrepareAndPlayStaging(const Npcify::FStagingResu
                     // Missing audio must not block the conversation; text and timeline still play.
                     Self->OnError.Broadcast(TEXT("Npcify speech audio download failed."));
                 }
-                if (--(*Remaining) == 0) Self->Runtime->PlayStaging(*Shared);
+                // A newer reply that started during the downloads keeps playing.
+                if (--(*Remaining) == 0) Self->Runtime->PlayTurnStaging(*Shared, PlaySequence);
             }
         );
         HttpRequest->ProcessRequest();
@@ -310,6 +311,11 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
             const bool bTransient = !bConnectedSuccessfully || Code == 409 || Code == 502 || Code == 503 || Code == 504;
             if (bTransient && Attempt < 2)
             {
+                if (bStreamed)
+                {
+                    // The server can run the turn again; the start event of the rerun can be lost.
+                    Self->Runtime->NoteTurnRetry(TCHAR_TO_UTF8(*Key));
+                }
                 Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1, bWithLiveMotion, bStreamed);
                 return;
             }
@@ -332,12 +338,13 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                 const Npcify::FStagingResultPayload Staging = Npcify::FNpcifySchemaMapper::DecodeStaging(Bytes);
                 // The stream plays the reply already (the result only completes it), or a newer
                 // reply plays: the runtime keeps the active staging of the conversation.
-                if (bStreamed && Self->Runtime->HandleTurnResult(TaskId, Staging))
+                uint64_t PlaySequence = 0;
+                if (bStreamed && Self->Runtime->HandleTurnResult(TaskId, Staging, &PlaySequence))
                 {
                     return;
                 }
                 Self->Runtime->SetActiveStagingId(Staging.StagingId);
-                Self->PrepareAndPlayStaging(Staging);
+                Self->PrepareAndPlayStaging(Staging, PlaySequence);
             }
             catch (const std::exception& Ex)
             {

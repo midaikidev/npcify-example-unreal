@@ -371,8 +371,11 @@ private:
     void ApplyMorphTargets();
     void HandleAudioBlock(const Npcify::FStagingDialogueBlock& Block, const Npcify::FNpcifyDecodedAudio& DecodedAudio);
     void QueuePcm(const int16* Samples, int32 NumSamples, int32 SampleRate, int32 Channels);
-    /** Downloads audio that the staging references by URL, then plays the staging. */
-    void PrepareAndPlayStaging(const Npcify::FStagingResultPayload& Staging);
+    /**
+     * Downloads audio that the staging references by URL, then plays the staging. PlaySequence:
+     * the order of a turn result (HandleTurnResult); 0 plays in any case.
+     */
+    void PrepareAndPlayStaging(const Npcify::FStagingResultPayload& Staging, uint64_t PlaySequence = 0);
     void SendCreateConversationRequest(const FString& FollowUpMessage);
     /** Requests a turn; for a streamed reply or live motion it joins the conversation stream first. */
     void SendTurnRequest(const FString& ConversationIdStr, const FString& Message);

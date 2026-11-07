@@ -77,23 +77,32 @@ namespace Npcify
             return ENpcifyStreamChange::None;
         }
         const std::string Type = EventString(Event, "type");
-        const bool bRerun = Type == "start" && bRunStarted;
+        const bool bStarted = bRunStarted;
         // Each run of the turn sends its start event first.
         bRunStarted = true;
-        if (bRerun && !IsFinalStop(StopReason))
-        {
-            // A retried request runs the turn again under the same task ID.
-            return ENpcifyStreamChange::Restarted;
-        }
-        if (IsStopped())
+        if (IsFinalStop(StopReason))
         {
             return ENpcifyStreamChange::None;
         }
         if (Type == "start")
         {
-            AdoptStagingId(Event);
+            if (bStarted)
+            {
+                // A retried request runs the turn again under the same task ID.
+                return ENpcifyStreamChange::Restarted;
+            }
+            if (!IsStopped())
+            {
+                AdoptStagingId(Event);
+            }
+            return ENpcifyStreamChange::None;
         }
-        else if (Type == "speech_chunk")
+        if (IsStopped())
+        {
+            // A failed or refused turn: only a rerun of a retried request can start it again.
+            return IsRerunPossible() ? ApplyWhileFailed(Type, Event) : ENpcifyStreamChange::None;
+        }
+        if (Type == "speech_chunk")
         {
             AppendChunk(Event);
         }
@@ -225,12 +234,11 @@ namespace Npcify
         {
             StopReason = Reason;
         }
-        bEndPending = false;
     }
 
-    void FNpcifyStreamTurn::Restart(const FNpcifyMsgPackValue& StartEvent)
+    void FNpcifyStreamTurn::Restart(const FNpcifyMsgPackValue& FirstEvent)
     {
-        Audio.clear();
+        ForgetAudioOf(Payload->Timeline.Dialogue);
         Requested.clear();
         Silent.clear();
         Revision = 0;
@@ -240,13 +248,61 @@ namespace Npcify
         bHasFinal = false;
         bPlaybackStarted = false;
         bRunStarted = true;
+        bRerunExpected = false;
         bEndPending = false;
         Noted = 0;
         // A new object: the first run's staging stays as the game got it.
         Payload = std::make_shared<FStagingResultPayload>();
         Payload->ProtocolVersion = 1;
         Payload->TaskId = TaskId;
-        AdoptStagingId(StartEvent);
+        AdoptStagingId(FirstEvent);
+    }
+
+    // The audio streams of a run that the turn forgets. Each synthesis has a new stream ID, so the
+    // streams of a rerun that came before its first revision stay.
+    void FNpcifyStreamTurn::ForgetAudioOf(const std::vector<FStagingDialogueBlock>& Dialogue)
+    {
+        for (const FStagingDialogueBlock& Block : Dialogue)
+        {
+            if (!Block.Audio.StreamId.empty())
+            {
+                Audio.erase(Block.Audio.StreamId);
+            }
+        }
+    }
+
+    // A failed or refused turn while its request is sent again: the audio of the rerun can come
+    // before its first revision, and a revision that starts over shows the rerun.
+    ENpcifyStreamChange FNpcifyStreamTurn::ApplyWhileFailed(const std::string& Type, const FNpcifyMsgPackValue& Event)
+    {
+        if (Type == "speech_chunk")
+        {
+            AppendChunk(Event);
+        }
+        else if (Type == "speech_complete")
+        {
+            CompleteAudio(EventString(Event, "streamId"));
+        }
+        else if (Type == "speech_error")
+        {
+            BreakAudio(EventString(Event, "streamId"));
+        }
+        else if (Type == "staging_live" || Type == "staging_prefix" || Type == "staging")
+        {
+            const FNpcifyMsgPackValue* TimelineValue = Event.FindField("timeline");
+            if (TimelineValue && TimelineValue->IsMap() &&
+                StartsRerun(EventInt(Event, "revision", 0), FNpcifySchemaMapper::MapTimeline(*TimelineValue)))
+            {
+                return ENpcifyStreamChange::Restarted;
+            }
+        }
+        return ENpcifyStreamChange::None;
+    }
+
+    // A revision of a rerun: its numbers start at 1 again, and its dialogue starts over.
+    bool FNpcifyStreamTurn::StartsRerun(int64_t Number, const FStagingTimeline& Timeline) const
+    {
+        return Number <= Revision || !Continues(Timeline);
     }
 
     bool FNpcifyStreamTurn::HasPlayableAudio(const FStagingDialogueBlock& Block)
@@ -358,12 +414,21 @@ namespace Npcify
     ENpcifyStreamChange FNpcifyStreamTurn::ApplyRevision(const FNpcifyMsgPackValue& Event, bool bCompleteRevision)
     {
         const FNpcifyMsgPackValue* TimelineValue = Event.FindField("timeline");
-        const int64_t Number = EventInt(Event, "revision", 0);
-        if (bComplete || Number <= Revision || !TimelineValue || !TimelineValue->IsMap())
+        if (!TimelineValue || !TimelineValue->IsMap())
         {
             return ENpcifyStreamChange::None;
         }
-        Merge(FNpcifySchemaMapper::MapTimeline(*TimelineValue));
+        const int64_t Number = EventInt(Event, "revision", 0);
+        FStagingTimeline Timeline = FNpcifySchemaMapper::MapTimeline(*TimelineValue);
+        if (IsRerunPossible() && StartsRerun(Number, Timeline))
+        {
+            return ENpcifyStreamChange::Restarted;
+        }
+        if (bComplete || Number <= Revision)
+        {
+            return ENpcifyStreamChange::None;
+        }
+        Merge(std::move(Timeline));
         if (!bHasFinal)
         {
             Payload->Text = JoinSpeechText(Payload->Timeline.Dialogue);
@@ -421,35 +486,45 @@ namespace Npcify
         }
     }
 
-    // A published block stays as it is, except a pending speech block: it keeps its ID, text and
-    // start, and takes the end, timing and lip-sync of its next version (its end grows while it
-    // stays pending).
-    void FNpcifyStreamTurn::Merge(FStagingTimeline&& Next)
+    // True when the timeline keeps the published dialogue: the same blocks, of which only a
+    // pending speech block can grow.
+    bool FNpcifyStreamTurn::Continues(const FStagingTimeline& Next) const
     {
-        std::vector<FStagingDialogueBlock>& Dialogue = Payload->Timeline.Dialogue;
-        bool bValid = Next.Dialogue.size() >= Dialogue.size();
-        for (size_t Index = 0; bValid && Index < Dialogue.size(); ++Index)
+        const std::vector<FStagingDialogueBlock>& Dialogue = Payload->Timeline.Dialogue;
+        if (Next.Dialogue.size() < Dialogue.size())
+        {
+            return false;
+        }
+        for (size_t Index = 0; Index < Dialogue.size(); ++Index)
         {
             const FStagingDialogueBlock& A = Dialogue[Index];
             const FStagingDialogueBlock& B = Next.Dialogue[Index];
             if (A.Id != B.Id || A.Type != B.Type || A.Text != B.Text || std::abs(A.StartTime - B.StartTime) > 1e-6)
             {
-                bValid = false;
+                return false;
             }
-            else if (A.bPending && A.Type == "speech")
+            const bool bValid = A.bPending && A.Type == "speech"
+                ? !B.bPending || B.EndTime >= A.EndTime - 1e-6
+                : std::abs(A.EndTime - B.EndTime) <= 1e-6;
+            if (!bValid)
             {
-                bValid = !B.bPending || B.EndTime >= A.EndTime - 1e-6;
-            }
-            else
-            {
-                bValid = std::abs(A.EndTime - B.EndTime) <= 1e-6;
+                return false;
             }
         }
-        if (!bValid)
+        return true;
+    }
+
+    // A published block stays as it is, except a pending speech block: it keeps its ID, text and
+    // start, and takes the end, timing and lip-sync of its next version (its end grows while it
+    // stays pending).
+    void FNpcifyStreamTurn::Merge(FStagingTimeline&& Next)
+    {
+        if (!Continues(Next))
         {
             Stop(ENpcifyTurnStop::Rejected);
             throw std::runtime_error(ChangedDialogueMessage);
         }
+        std::vector<FStagingDialogueBlock>& Dialogue = Payload->Timeline.Dialogue;
         for (size_t Index = 0; Index < Dialogue.size(); ++Index)
         {
             FStagingDialogueBlock& Block = Dialogue[Index];

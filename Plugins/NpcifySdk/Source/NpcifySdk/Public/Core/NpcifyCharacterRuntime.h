@@ -125,6 +125,12 @@ namespace Npcify
 
         std::function<void(const FStagingResultPayload&)> OnSpeechStart;
         std::function<void(const FStagingResultPayload&)> OnSpeechEnd;
+        /**
+         * The speech that played stopped before its end: StopSpeaking, a new conversation, a
+         * staging or a newer reply that replaces it, a failed turn, or a turn that the server runs
+         * again. Stop the audio of the current block here.
+         */
+        std::function<void()> OnSpeechStopped;
         std::function<void(const FStagingDialogueBlock&, const FNpcifyDecodedAudio&)> OnAudioBlock;
         std::function<void(const std::string&, const FStagingCharacterCue&)> OnCharacterRevealed;
         std::function<void(const std::string&, bool)> OnAnimationPlayRequested;
@@ -179,9 +185,20 @@ namespace Npcify
          * the failure to HandleTurnFailure.
          */
         void BeginStreamTurn(const std::string& TaskId);
+        /** The turn request is sent again: the server can run the turn again under the same task ID. */
+        void NoteTurnRetry(const std::string& TaskId);
         void HandleStreamEvent(const FNpcifyMsgPackValue& Event);
-        /** True when the stream plays this reply: then do not play Result again. */
-        bool HandleTurnResult(const std::string& TaskId, const FStagingResultPayload& Result);
+        /**
+         * True when the stream plays this reply, or when it must not play (the game stopped it, or
+         * a newer reply plays): then do not play Result. False: play Result as a whole with
+         * PlayTurnStaging and the sequence that OutPlaySequence receives.
+         */
+        bool HandleTurnResult(const std::string& TaskId, const FStagingResultPayload& Result, uint64_t* OutPlaySequence = nullptr);
+        /**
+         * Plays the HTTP result of a turn as a whole, unless a newer reply started after
+         * HandleTurnResult (for example while its audio downloaded). Sequence 0 always plays.
+         */
+        bool PlayTurnStaging(const FStagingResultPayload& Staging, uint64_t Sequence);
         /**
          * The HTTP request of a turn failed. True when the stream delivered the whole reply and its
          * options: the reply plays on, and the failure is no error of the turn.
@@ -228,11 +245,23 @@ namespace Npcify
         void HandleDialogueBlockStarted(const FStagingDialogueBlock& Block);
         void HandleStagingCompleted(const FStagingResultPayload& Staging);
         std::shared_ptr<FNpcifyStreamTurn> FindTurn(const std::string& TaskId) const;
-        void RestartTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& StartEvent);
+        /** What a stop leaves to report once the state of the runtime is consistent. */
+        struct FStoppedSpeech
+        {
+            /** The staging player stopped speech that played: the engine stops its audio. */
+            bool bStopped = false;
+            /** A reply that played to its end before its options came: its OnSpeechEnd. */
+            std::shared_ptr<FStagingResultPayload> Ended;
+        };
+
+        ENpcifyStreamChange ApplyTurnEvent(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& Event);
+        void RestartTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& FirstEvent);
         void PumpTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
         void StartStreamPlayback(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
         void SupersedeOlderTurns(uint64_t Sequence);
-        void StopPlayingTurn(ENpcifyTurnStop Reason);
+        FStoppedSpeech StopPlayingTurn(ENpcifyTurnStop Reason);
+        bool StopPlayback();
+        void Report(const FStoppedSpeech& Stop);
         void EndTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, ENpcifyTurnStop Reason);
         void ForgetClosedTurns();
         void SettleThinking();
@@ -251,6 +280,8 @@ namespace Npcify
         std::shared_ptr<FNpcifyStreamTurn> PlayingTurn;
         /** The request order of the newest reply that started to play: an older reply never plays over it. */
         uint64_t PlayedSequence = 0;
+        /** Counts the calls that start or stop speech: a handler of a stop can make one. */
+        uint64_t PlayGeneration = 0;
 
         std::string ConversationId;
         std::string ActiveStagingId;

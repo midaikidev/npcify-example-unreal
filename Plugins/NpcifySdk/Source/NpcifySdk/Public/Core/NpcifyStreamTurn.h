@@ -21,7 +21,10 @@ namespace Npcify
         Audio,
         Final,
         Failed,
-        /** A second start event: the server runs the turn again (a retried request). */
+        /**
+         * The server runs the turn again (a retried request): a second start event, or after a
+         * retry a revision that starts the dialogue again. The event belongs to the new run.
+         */
         Restarted,
     };
 
@@ -75,7 +78,10 @@ namespace Npcify
         bool IsStopped() const { return StopReason != ENpcifyTurnStop::None; }
         bool IsPlaybackStarted() const { return bPlaybackStarted; }
 
-        /** The playback ended before the options were known; OnSpeechEnd waits for them. */
+        /**
+         * The playback ended before the options were known; OnSpeechEnd waits for them. A stop
+         * keeps it, so that the runtime can raise the end.
+         */
         bool bEndPending = false;
         /** The HTTP request of the turn finished (result or failure). */
         bool bRequestClosed = false;
@@ -89,6 +95,14 @@ namespace Npcify
         }
 
         ENpcifyStreamChange Apply(const FNpcifyMsgPackValue& Event);
+
+        /**
+         * The request of the turn is sent again: the server can run the turn again, and the start
+         * event of the rerun can be lost while the stream connects again. Until the request
+         * finishes, a revision whose number is not higher than the last one, or one that does not
+         * continue the published dialogue, starts the rerun too.
+         */
+        void ExpectRerun() { bRerunExpected = true; }
 
         /**
          * Applies the HTTP result. Returns false when the result plays as a whole: no revision
@@ -115,9 +129,9 @@ namespace Npcify
         void Stop(ENpcifyTurnStop Reason);
         /**
          * The server runs the turn again (a retried request): the turn forgets the first run and
-         * applies the new run from its start event, in a new staging object.
+         * applies the new run from FirstEvent on, in a new staging object.
          */
-        void Restart(const FNpcifyMsgPackValue& StartEvent);
+        void Restart(const FNpcifyMsgPackValue& FirstEvent);
 
         /** A pause, silent speech, or speech whose audio bytes are complete. */
         static bool HasPlayableAudio(const FStagingDialogueBlock& Block);
@@ -134,6 +148,11 @@ namespace Npcify
         };
 
         bool IsBlockReady(const FStagingDialogueBlock& Block) const;
+        bool IsRerunPossible() const { return bRerunExpected && !bRequestClosed; }
+        ENpcifyStreamChange ApplyWhileFailed(const std::string& Type, const FNpcifyMsgPackValue& Event);
+        bool StartsRerun(int64_t Number, const FStagingTimeline& Timeline) const;
+        bool Continues(const FStagingTimeline& Next) const;
+        void ForgetAudioOf(const std::vector<FStagingDialogueBlock>& Dialogue);
         void AdoptStagingId(const FNpcifyMsgPackValue& Event);
         void AppendChunk(const FNpcifyMsgPackValue& Event);
         ENpcifyStreamChange CompleteAudio(const std::string& StreamId);
@@ -158,7 +177,9 @@ namespace Npcify
         bool bComplete = false;
         bool bHasFinal = false;
         bool bPlaybackStarted = false;
-        /** A start event arrived: a later one means that the server runs the turn again. */
+        /** An event of the turn arrived: a later start event means that the server runs it again. */
         bool bRunStarted = false;
+        /** The request was sent again: the server can run the turn again. */
+        bool bRerunExpected = false;
     };
 }

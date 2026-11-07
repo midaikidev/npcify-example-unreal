@@ -110,24 +110,35 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::ResetConversationState()
     {
-        // A reply that played to its end and waits for its options still ends.
-        StopPlayingTurn(ENpcifyTurnStop::Game);
-        StopStreamTurns();
-        StagingPlayer.Stop();
+        ++PlayGeneration;
         bThinking = false;
+        // A reply that played to its end and waits for its options still ends.
+        FStoppedSpeech Stop = StopPlayingTurn(ENpcifyTurnStop::Game);
+        Stop.bStopped = StopPlayback() || Stop.bStopped;
+        StopStreamTurns();
         ActiveStagingId.clear();
         LastOptions.clear();
         if (!BakedConversation)
         {
             ConversationId.clear();
         }
+        // The events come last: a handler can start the next conversation.
+        Report(Stop);
     }
 
     void FNpcifyCharacterRuntime::PlayStaging(const FStagingResultPayload& Staging)
     {
-        // A staging played as a whole replaces a streamed reply.
-        StopPlayingTurn(ENpcifyTurnStop::Superseded);
+        const uint64_t Generation = ++PlayGeneration;
         bThinking = false;
+        // A staging played as a whole replaces the speech that plays.
+        FStoppedSpeech Stop = StopPlayingTurn(ENpcifyTurnStop::Superseded);
+        Stop.bStopped = StopPlayback() || Stop.bStopped;
+        Report(Stop);
+        if (Generation != PlayGeneration)
+        {
+            // A handler of the stop played or stopped speech.
+            return;
+        }
         ActiveStagingId = Staging.StagingId;
         LastOptions = Staging.Options;
         const FStagingMotionTrack& Track = Staging.Timeline.Motion;
@@ -156,10 +167,12 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::StopSpeaking()
     {
+        ++PlayGeneration;
         bThinking = false;
         // A reply that played to its end and waits for its options still ends.
-        StopPlayingTurn(ENpcifyTurnStop::Game);
-        StagingPlayer.Stop();
+        FStoppedSpeech Stop = StopPlayingTurn(ENpcifyTurnStop::Game);
+        Stop.bStopped = StopPlayback() || Stop.bStopped;
+        Report(Stop);
     }
 
     void FNpcifyCharacterRuntime::PlayAnimation(const std::string& AnimationId, bool bLoop)

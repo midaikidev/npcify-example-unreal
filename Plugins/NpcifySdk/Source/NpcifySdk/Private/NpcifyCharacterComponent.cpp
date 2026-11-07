@@ -422,6 +422,11 @@ void UNpcifyCharacterComponent::RebuildRuntime()
     {
         OnSpeechEnd.Broadcast(UTF8_TO_TCHAR(Staging.StagingId.c_str()), UTF8_TO_TCHAR(Staging.Text.c_str()));
     };
+    // The runtime stopped the speech itself (a failed turn, a rerun, a newer reply): its voice stops too.
+    Runtime->OnSpeechStopped = [this]()
+    {
+        if (AudioComponent && AudioComponent->IsPlaying()) AudioComponent->Stop();
+    };
     Runtime->OnCharacterRevealed = [this](const std::string& Text, const Npcify::FStagingCharacterCue& Cue)
     {
         OnCharacterRevealed.Broadcast(UTF8_TO_TCHAR(Text.c_str()), UTF8_TO_TCHAR(Cue.Character.c_str()));

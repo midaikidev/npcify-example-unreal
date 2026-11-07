@@ -27,6 +27,16 @@ namespace Npcify
         StreamTurns.push_back(std::make_shared<FNpcifyStreamTurn>(TaskId));
     }
 
+    void FNpcifyCharacterRuntime::NoteTurnRetry(const std::string& TaskId)
+    {
+        const std::shared_ptr<FNpcifyStreamTurn> Turn = FindTurn(FNpcifyStreamTurn::NormalizeTaskId(TaskId));
+        if (Turn)
+        {
+            Turn->ExpectRerun();
+            NoteTurn(*Turn, "the request is sent again");
+        }
+    }
+
     void FNpcifyCharacterRuntime::HandleStreamEvent(const FNpcifyMsgPackValue& Event)
     {
         if (!IsTurnEvent(Event))
@@ -40,25 +50,22 @@ namespace Npcify
         {
             return;
         }
-        ENpcifyStreamChange Change = ENpcifyStreamChange::None;
-        try
+        ENpcifyStreamChange Change = ApplyTurnEvent(Turn, Event);
+        if (Change == ENpcifyStreamChange::Restarted)
         {
-            Change = Turn->Apply(Event);
-        }
-        catch (const std::exception&)
-        {
-            // A revision that changes published dialogue: the reply stops, nothing replays. The
-            // request reports the failure (its result is refused too).
-            NoteTurn(*Turn, "a revision changed published dialogue");
-            EndTurn(Turn, ENpcifyTurnStop::Rejected);
-            return;
+            RestartTurn(Turn, Event);
+            const FNpcifyMsgPackValue* Type = Event.FindField("type");
+            if ((Type && Type->IsString() && Type->StringValue == "start") || Turn->IsStopped())
+            {
+                return;
+            }
+            // The revision that showed the rerun belongs to it: apply it from zero.
+            Change = ApplyTurnEvent(Turn, Event);
         }
         switch (Change)
         {
         case ENpcifyStreamChange::None:
-            return;
         case ENpcifyStreamChange::Restarted:
-            RestartTurn(Turn, Event);
             return;
         case ENpcifyStreamChange::Failed:
             // The HTTP request fails too and reports the error.
@@ -72,8 +79,28 @@ namespace Npcify
         }
     }
 
-    bool FNpcifyCharacterRuntime::HandleTurnResult(const std::string& TaskId, const FStagingResultPayload& Result)
+    // A revision that changes published dialogue stops the reply and changes nothing; the request
+    // reports the failure (its result is refused too).
+    ENpcifyStreamChange FNpcifyCharacterRuntime::ApplyTurnEvent(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& Event)
     {
+        try
+        {
+            return Turn->Apply(Event);
+        }
+        catch (const std::exception&)
+        {
+            NoteTurn(*Turn, "a revision changed published dialogue");
+            EndTurn(Turn, ENpcifyTurnStop::Rejected);
+            return ENpcifyStreamChange::None;
+        }
+    }
+
+    bool FNpcifyCharacterRuntime::HandleTurnResult(const std::string& TaskId, const FStagingResultPayload& Result, uint64_t* OutPlaySequence)
+    {
+        if (OutPlaySequence)
+        {
+            *OutPlaySequence = 0;
+        }
         const std::shared_ptr<FNpcifyStreamTurn> Turn = FindTurn(FNpcifyStreamTurn::NormalizeTaskId(TaskId));
         if (!Turn)
         {
@@ -94,7 +121,6 @@ namespace Npcify
         {
             // The result changes dialogue that played: the turn fails.
             EndTurn(Turn, ENpcifyTurnStop::Rejected);
-            SettleThinking();
             if (OnError) OnError(Error.what());
             return true;
         }
@@ -112,19 +138,36 @@ namespace Npcify
             // newer reply plays already. Late events of this turn are ignored.
             const bool bNewest = Turn->GetSequence() >= PlayedSequence;
             NoteTurn(*Turn, bNewest ? "the HTTP result plays as a whole" : "a newer reply plays: the HTTP result does not");
-            EndTurn(Turn, ENpcifyTurnStop::Superseded);
+            Turn->Stop(ENpcifyTurnStop::Superseded);
+            ForgetClosedTurns();
             if (!bNewest)
             {
                 SettleThinking();
                 return true;
             }
+            // Older replies do not start while the audio of this one downloads.
             PlayedSequence = Turn->GetSequence();
             SupersedeOlderTurns(PlayedSequence);
+            if (OutPlaySequence)
+            {
+                *OutPlaySequence = PlayedSequence;
+            }
             return false;
         }
         NoteTurn(*Turn, "the HTTP result completes the streamed reply");
         PumpTurn(Turn);
         ForgetClosedTurns();
+        return true;
+    }
+
+    bool FNpcifyCharacterRuntime::PlayTurnStaging(const FStagingResultPayload& Staging, uint64_t Sequence)
+    {
+        if (Sequence != 0 && Sequence < PlayedSequence)
+        {
+            // A newer reply started while the audio of this one downloaded.
+            return false;
+        }
+        PlayStaging(Staging);
         return true;
     }
 
@@ -140,9 +183,9 @@ namespace Npcify
         {
             // The stream delivered the whole reply, its audio and its options: a failed answer
             // (for example a timeout) does not fail it.
-            PumpTurn(Turn);
             ForgetClosedTurns();
             SettleThinking();
+            PumpTurn(Turn);
             return true;
         }
         EndTurn(Turn, ENpcifyTurnStop::Failed);
@@ -175,7 +218,7 @@ namespace Npcify
     }
 
     // A retried request: the server runs the turn again under the same task ID.
-    void FNpcifyCharacterRuntime::RestartTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& StartEvent)
+    void FNpcifyCharacterRuntime::RestartTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, const FNpcifyMsgPackValue& FirstEvent)
     {
         if (Turn->GetSequence() < PlayedSequence)
         {
@@ -183,15 +226,21 @@ namespace Npcify
             Turn->Stop(ENpcifyTurnStop::Superseded);
             return;
         }
+        FStoppedSpeech Stop;
         if (PlayingTurn == Turn)
         {
-            // The first run stops without OnSpeechEnd; the new run plays from its start.
+            // The first run stops; if it played to its end, it ends before the rerun starts.
             PlayingTurn.reset();
-            StagingPlayer.Stop();
+            if (Turn->bEndPending)
+            {
+                Stop.Ended = Turn->GetPayload();
+            }
+            Stop.bStopped = StopPlayback();
         }
-        Turn->Restart(StartEvent);
+        Turn->Restart(FirstEvent);
         bThinking = true;
         NoteTurn(*Turn, "the server runs the turn again");
+        Report(Stop);
     }
 
     // Starts the playback once the first block can play, adds the blocks that became ready,
@@ -237,18 +286,26 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::StartStreamPlayback(const std::shared_ptr<FNpcifyStreamTurn>& Turn)
     {
-        StopPlayingTurn(ENpcifyTurnStop::Superseded);
+        ++PlayGeneration;
+        bThinking = false;
+        FStoppedSpeech Stop = StopPlayingTurn(ENpcifyTurnStop::Superseded);
+        Stop.bStopped = StopPlayback() || Stop.bStopped;
         SupersedeOlderTurns(Turn->GetSequence());
         PlayingTurn = Turn;
         PlayedSequence = Turn->GetSequence();
         Turn->MarkStarted();
-        bThinking = false;
         const std::shared_ptr<FStagingResultPayload> Payload = Turn->GetPayload();
         ActiveStagingId = Payload->StagingId;
         LastOptions = Payload->Options;
         NoteTurn(*Turn, "the streamed reply plays (" + std::to_string(Payload->Timeline.Dialogue.size()) + " block(s) published)");
+        // The reply that this one replaces ends first; its handlers can stop this one.
+        Report(Stop);
+        if (PlayingTurn != Turn || Turn->IsStopped())
+        {
+            return;
+        }
         if (OnSpeechStart) OnSpeechStart(*Payload);
-        if (PlayingTurn != Turn)
+        if (PlayingTurn != Turn || Turn->IsStopped())
         {
             return;
         }
@@ -269,39 +326,61 @@ namespace Npcify
         ForgetClosedTurns();
     }
 
-    // The playing reply stops. If it already played to its end and only waited for its options,
-    // its OnSpeechEnd fires now: the game heard the whole reply.
-    void FNpcifyCharacterRuntime::StopPlayingTurn(ENpcifyTurnStop Reason)
+    // The playing reply stops; the caller reports the stop when its own state is consistent.
+    FNpcifyCharacterRuntime::FStoppedSpeech FNpcifyCharacterRuntime::StopPlayingTurn(ENpcifyTurnStop Reason)
     {
+        FStoppedSpeech Stop;
         const std::shared_ptr<FNpcifyStreamTurn> Turn = PlayingTurn;
         if (!Turn)
         {
-            return;
+            return Stop;
         }
         PlayingTurn.reset();
-        const bool bEnded = Turn->bEndPending;
-        Turn->Stop(Reason);
-        StagingPlayer.Stop();
-        ForgetClosedTurns();
-        if (bEnded && OnSpeechEnd)
+        if (Turn->bEndPending)
         {
-            OnSpeechEnd(*Turn->GetPayload());
+            Stop.Ended = Turn->GetPayload();
+        }
+        Turn->bEndPending = false;
+        Turn->Stop(Reason);
+        Stop.bStopped = StopPlayback();
+        ForgetClosedTurns();
+        return Stop;
+    }
+
+    // Stops the staging player; true when it played or waited for a block.
+    bool FNpcifyCharacterRuntime::StopPlayback()
+    {
+        const bool bPlaying = StagingPlayer.IsPlaying();
+        StagingPlayer.Stop();
+        return bPlaying;
+    }
+
+    // The engine stops its audio, then a reply that played to its end gets its OnSpeechEnd. The
+    // handlers can start or stop speech: callers report last.
+    void FNpcifyCharacterRuntime::Report(const FStoppedSpeech& Stop)
+    {
+        if (Stop.bStopped && OnSpeechStopped)
+        {
+            OnSpeechStopped();
+        }
+        if (Stop.Ended && OnSpeechEnd)
+        {
+            OnSpeechEnd(*Stop.Ended);
         }
     }
 
     // The turn plays no more; a reply that played to its end still gets its OnSpeechEnd.
     void FNpcifyCharacterRuntime::EndTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, ENpcifyTurnStop Reason)
     {
-        if (PlayingTurn == Turn)
-        {
-            StopPlayingTurn(Reason);
-            bThinking = false;
-        }
-        else
+        if (PlayingTurn != Turn)
         {
             Turn->Stop(Reason);
+            ForgetClosedTurns();
+            SettleThinking();
+            return;
         }
-        ForgetClosedTurns();
+        bThinking = false;
+        Report(StopPlayingTurn(Reason));
     }
 
     // A turn stays findable while its request is open: a retry can run it again, and its result
