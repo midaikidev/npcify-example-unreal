@@ -17,7 +17,7 @@ Unreal Engine 5 C++ & Blueprint plugin (`NpcifySdk.uplugin`) for embedding Npcif
 
 ## Installation
 
-Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.6.0`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
+Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.6.1`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
 
 ```bash
 mkdir -p Plugins/NpcifySdk
@@ -79,9 +79,16 @@ a gap and without a repeated block.
   can play while the server still aligns its lip-sync: later revisions add to
   its visemes and text timing. A block whose chunks did not arrive plays the
   stored audio of the HTTP result.
-- **Clock:** at the end of the ready blocks the reply waits with a neutral mouth
-  until the next block can play. The staging clock, and with it the live motion
-  frames, waits too.
+- **Clock:** while the server aligns the last block, its estimated end can come
+  before the end of its audio. The block then plays to the end of the audio that
+  minimp3 decoded: the staging clock, and with it the live motion frames, runs
+  on with the voice. The part without lip-sync has a neutral mouth until a later
+  revision adds its visemes and text timing at the current time. At the end of
+  its audio, a block that is not final waits for its final version, which ends
+  it at its end time. The clock never goes back, and a block never starts
+  again. At the end of the ready blocks the reply waits with a neutral mouth
+  until the next block can play. The staging clock and the live motion frames
+  wait too.
 - **Events:** `OnSpeechStart` fires when the first block plays, with the text
   known at that time. `OnSpeechEnd` fires once, after the last block and when
   the reply options are known, so `GetCurrentReplyOptions()` gives them.
@@ -95,9 +102,12 @@ a gap and without a repeated block.
   An older reply never plays over a newer one.
 - **Options:** `bStreamReplies` turns streaming off. The log category
   `LogNpcifyStream` reports when the first revision, the first audio and the
-  playback of each streamed reply came.
+  playback of each streamed reply came, and the audio length of a pending block.
 - **Own integrations:** a host of `FNpcifyCharacterRuntime` that plays the audio
-  itself stops the voice of the current block on `OnSpeechStopped`. For each
+  itself stops the voice of the current block on `OnSpeechStopped`. It gives the
+  length of the decoded audio of each block that starts (`OnAudioBlock`) with
+  `SetBlockAudioLength`; without it, the clock of a pending block waits at its
+  estimated end. For each
   turn it calls `BeginTurnRequest` (its order goes to `BeginStreamTurn`),
   `NoteTurnRetry` before it sends the request again, `EndTurnRequest` when the
   request fails, and plays a result that `HandleTurnResult` gives back with

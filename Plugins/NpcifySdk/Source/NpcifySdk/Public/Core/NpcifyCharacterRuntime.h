@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -85,12 +86,16 @@ namespace Npcify
         /**
          * Plays a staging whose dialogue still grows (a streamed reply). The clock stops at the
          * first of the dialogue blocks that cannot play yet (ReadyBlocks: the leading blocks that
-         * can), and at the end of the dialogue until bComplete. The staging object stays shared:
-         * a revision changes it, then UpdateStream.
+         * can), and at the end of the dialogue until bComplete. A pending block with a known audio
+         * length (SetBlockAudioLength) plays to the end of its audio; without one, the clock
+         * waits at its estimated end until its final version. The staging object stays shared: a
+         * revision changes it, then UpdateStream.
          */
         void PlayStream(std::shared_ptr<const FStagingResultPayload> Staging, size_t ReadyBlocks, bool bComplete);
         /** The streamed staging that plays has more ready blocks, or its complete dialogue. */
         void UpdateStream(size_t ReadyBlocks, bool bComplete);
+        /** The length in seconds of the decoded audio of a block of the staging that plays. */
+        void SetBlockAudioLength(const std::string& BlockId, double Seconds);
         void Stop();
         void Tick(double DeltaTimeSeconds, float FallbackAudioRms = 0.0f);
 
@@ -98,6 +103,10 @@ namespace Npcify
         void Start(std::shared_ptr<const FStagingResultPayload> Staging, bool bInStreamed, size_t InReadyBlocks, bool bComplete);
         void RecomputeDuration();
         double AvailableEnd() const;
+        /** The end of a block on the staging clock: a pending block plays to the end of its audio. */
+        double BlockEnd(const FStagingDialogueBlock& Block) const;
+        /** The block that plays at the current time; -1 for none. Blocks that played never start again. */
+        int FindBlockToPlay() const;
 
         FNpcifyFacialMixer& FacialMixer;
         FNpcifyVisemePlayer& VisemePlayer;
@@ -110,6 +119,10 @@ namespace Npcify
         size_t ReadyBlocks = 0;
         bool bWaiting = false;
         int ActiveBlockIndex = -1;
+        /** The first block that did not start yet. */
+        size_t NextBlockIndex = 0;
+        /** The lengths in seconds of the decoded audio of blocks, by block ID. */
+        std::map<std::string, double> AudioLengths;
         int NextCharIndex = 0;
         double CurrentTimeSeconds = 0.0;
         double TotalDurationSeconds = 0.0;
@@ -215,6 +228,13 @@ namespace Npcify
         bool HandleTurnFailure(const std::string& TaskId);
         /** The stored audio of a block that OnBlockAudioRequested asked for; empty after a failed download. */
         void SetBlockAudio(const std::string& TaskId, const std::string& BlockId, const std::vector<uint8_t>& Bytes);
+        /**
+         * The engine decoded the audio of a dialogue block that starts (OnAudioBlock): its length in
+         * seconds. A pending block of a streamed reply plays to the end of its audio while later
+         * revisions add its alignment; without a length, its clock waits at its estimated end until
+         * its final version. UNpcifyCharacterComponent calls it; the runtime does for PCM audio.
+         */
+        void SetBlockAudioLength(const std::string& BlockId, double Seconds);
         /** A block of a streamed reply needs its stored audio: the engine downloads it, then SetBlockAudio. */
         std::function<void(const std::string& TaskId, const std::string& BlockId, const std::string& Url)> OnBlockAudioRequested;
         /** True for the turn events of conversations:stream (not motion_frames). */

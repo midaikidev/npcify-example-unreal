@@ -227,6 +227,8 @@ namespace Npcify
         if (IsPcmAudio(Block.Audio))
         {
             Decoded = DecodeAudioBytes(Block.Audio.Data);
+            // The engine plays these samples: a pending block plays to their end.
+            SetBlockAudioLength(Block.Id, Decoded.GetDurationSeconds());
         }
         if (OnAudioBlock)
         {

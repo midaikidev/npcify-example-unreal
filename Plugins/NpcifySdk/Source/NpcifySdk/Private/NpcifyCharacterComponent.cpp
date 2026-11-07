@@ -514,6 +514,9 @@ void UNpcifyCharacterComponent::HandleAudioBlock(
         OnError.Broadcast(FString::Printf(TEXT("Cannot decode %s audio."), UTF8_TO_TCHAR(Block.Audio.MimeType.c_str())));
         return;
     }
+    // A pending block of a streamed reply plays to the end of this audio, not to its estimated end.
+    const double SamplesPerSecond = static_cast<double>(FMath::Max(8000, SampleRate)) * FMath::Max(1, Channels);
+    Runtime->SetBlockAudioLength(Block.Id, static_cast<double>(Pcm.Num()) / SamplesPerSecond);
     QueuePcm(Pcm.GetData(), Pcm.Num(), SampleRate, Channels);
 }
 

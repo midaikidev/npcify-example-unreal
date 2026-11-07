@@ -231,6 +231,19 @@ namespace Npcify
         }
     }
 
+    void FNpcifyCharacterRuntime::SetBlockAudioLength(const std::string& BlockId, double Seconds)
+    {
+        StagingPlayer.SetBlockAudioLength(BlockId, Seconds);
+        const FStagingDialogueBlock* Block = StagingPlayer.GetCurrentBlock();
+        if (!PlayingTurn || !Block || Block->Id != BlockId || !Block->bPending || !(Seconds > 0.0))
+        {
+            return;
+        }
+        char Lengths[96];
+        std::snprintf(Lengths, sizeof(Lengths), "%.2f s of audio (its timing ends at %.2f s)", Seconds, Block->EndTime - Block->StartTime);
+        NoteTurn(*PlayingTurn, "the pending block " + BlockId + " plays its " + Lengths);
+    }
+
     std::shared_ptr<FNpcifyStreamTurn> FNpcifyCharacterRuntime::FindTurn(const std::string& TaskId) const
     {
         for (const std::shared_ptr<FNpcifyStreamTurn>& Turn : StreamTurns)
