@@ -188,6 +188,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Live Motion")
     bool bLiveMotion = true;
 
+    /**
+     * Play a reply while the server makes it (docs/streaming_reply.md): its first dialogue block
+     * plays when its audio is ready. Off: a reply plays after it is complete.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Replies")
+    bool bStreamReplies = true;
+
     /** Anchored keeps the character where the game placed it; World applies the generated hips movement. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Live Motion")
     ENpcifyLiveMotionRootMode LiveMotionRootMode = ENpcifyLiveMotionRootMode::Anchored;
@@ -367,19 +374,24 @@ private:
     /** Downloads audio that the staging references by URL, then plays the staging. */
     void PrepareAndPlayStaging(const Npcify::FStagingResultPayload& Staging);
     void SendCreateConversationRequest(const FString& FollowUpMessage);
-    /** Requests a turn; with live motion it joins the conversation stream first. */
+    /** Requests a turn; for a streamed reply or live motion it joins the conversation stream first. */
     void SendTurnRequest(const FString& ConversationIdStr, const FString& Message);
     void SendCreateStagingRequest(
         const FString& ConversationIdStr,
         const FString& Message,
         const FString& IdempotencyKey,
         int32 Attempt,
-        bool bWithLiveMotion
+        bool bWithLiveMotion,
+        bool bStreamed
     );
+    /** The conversation stream: NpcifyCharacterComponentStream.cpp. */
+    bool WantsStreamReplies() const;
+    void JoinConversationStream(const FString& ConversationIdStr, TFunction<void(bool)> OnDone);
+    void HandleStreamEvent(const Npcify::FNpcifyMsgPackValue& Event);
+    void DownloadBlockAudio(const std::string& TaskId, const std::string& BlockId, const std::string& Url);
+    static void LogStreamNote(const std::string& Message);
     /** Live motion: NpcifyCharacterComponentLiveMotion.cpp. */
     bool WantsLiveMotion() const;
-    void JoinLiveMotionStream(const FString& ConversationIdStr, TFunction<void(bool)> OnDone);
-    void HandleLiveMotionEvent(const Npcify::FNpcifyMsgPackValue& Event);
     void DownloadMotionTrack(const std::string& StagingId, const Npcify::FStagingMotionTrack& Track);
     void UpdateLiveMotion(float DeltaTime);
     void BindLiveMotionMesh();
@@ -431,11 +443,11 @@ private:
     bool bHasLookAtLocation = false;
     /** Increments on reset, so that late HTTP responses of an old conversation are ignored. */
     int32 ConversationGeneration = 0;
-    TSharedPtr<FNpcifyConversationSocket> LiveMotionSocket;
+    TSharedPtr<FNpcifyConversationSocket> StreamSocket;
     TSharedPtr<FNpcifyLiveMotionBinding> LiveMotionBinding;
     FString LiveMotionPreparedConversation;
     /** A turn stopped waiting for the stream of this conversation; later turns do not wait for it. */
-    FString LiveMotionJoinGivenUp;
+    FString StreamJoinGivenUp;
     /** The character's live motion switch from its info, once read. */
     bool bLiveMotionInfoKnown = false;
     bool bLiveMotionInEffect = false;

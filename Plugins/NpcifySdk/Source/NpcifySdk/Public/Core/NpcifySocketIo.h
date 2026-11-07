@@ -3,6 +3,7 @@
 #include "Core/NpcifyProtocol.h"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -47,6 +48,9 @@ namespace Npcify
      * moves the WebSocket messages: it passes received text and binary messages in and sends
      * what SendText gives. The session connects with the API key, joins the room of the
      * conversation with an acknowledgement, answers pings, and decodes conversations:stream.
+     * Unreal's WebSockets module delivers text and binary messages from two queues, so an
+     * attachment can come before or after the text of other events. Each queue keeps its order:
+     * the session pairs the headers of binary events with the attachments in that order.
      */
     class FNpcifyConversationSession
     {
@@ -82,8 +86,16 @@ namespace Npcify
         int64_t GetPingTimeoutMs() const { return PingTimeoutMs; }
 
     private:
+        struct FBinaryEvent
+        {
+            std::string Name;
+            int Expected = 0;
+            std::vector<std::vector<uint8_t>> Parts;
+        };
+
         void SendJoin();
-        void Dispatch();
+        void PairAttachments();
+        void Dispatch(FBinaryEvent Binary);
         void Refuse();
 
         std::string ApiToken;
@@ -95,8 +107,8 @@ namespace Npcify
         int64_t JoinAckId = -1;
         int64_t NextAckId = 0;
         int64_t PingTimeoutMs = 45000;
-        std::string BinaryEvent;
-        int BinaryExpected = 0;
-        std::vector<std::vector<uint8_t>> BinaryParts;
+        /** Binary events whose attachments did not all arrive, and attachments without their header. */
+        std::deque<FBinaryEvent> BinaryEvents;
+        std::deque<std::vector<uint8_t>> Attachments;
     };
 }

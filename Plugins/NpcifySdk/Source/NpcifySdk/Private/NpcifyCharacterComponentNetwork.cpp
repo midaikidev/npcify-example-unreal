@@ -153,10 +153,10 @@ void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& Fol
                 Self->Runtime->SetConversationId(Created.ConversationId);
                 Self->Runtime->SetActiveStagingId(Created.OpeningStaging.StagingId);
                 const FString CreatedId = UTF8_TO_TCHAR(Created.ConversationId.c_str());
-                if (Self->WantsLiveMotion())
+                if (Self->WantsLiveMotion() || Self->WantsStreamReplies())
                 {
                     // Join the stream early, so that the first turn does not wait for it.
-                    Self->JoinLiveMotionStream(CreatedId, nullptr);
+                    Self->JoinConversationStream(CreatedId, nullptr);
                 }
                 if (!FollowUpMessage.IsEmpty())
                 {
@@ -176,25 +176,25 @@ void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& Fol
 
 void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr, const FString& Message)
 {
-    if (!WantsLiveMotion())
+    if (!WantsLiveMotion() && !WantsStreamReplies())
     {
-        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false);
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false, false);
         return;
     }
-    // Live motion frames arrive on the conversation stream while the server makes the turn:
-    // declare them only when the stream has joined the conversation.
-    if (LiveMotionSocket.IsValid() && LiveMotionSocket->IsJoined(ConversationIdStr))
+    // The streamed reply and the live motion frames arrive on the conversation stream while the
+    // server makes the turn: use them only when the stream has joined the conversation.
+    if (StreamSocket.IsValid() && StreamSocket->IsJoined(ConversationIdStr))
     {
-        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, true);
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, WantsLiveMotion(), WantsStreamReplies());
         return;
     }
-    if (LiveMotionJoinGivenUp == ConversationIdStr ||
-        (LiveMotionSocket.IsValid() &&
-            (LiveMotionSocket->IsFailing(ConversationIdStr) || LiveMotionSocket->IsRefused(ConversationIdStr))))
+    if (StreamJoinGivenUp == ConversationIdStr ||
+        (StreamSocket.IsValid() &&
+            (StreamSocket->IsFailing(ConversationIdStr) || StreamSocket->IsRefused(ConversationIdStr))))
     {
-        // A join that is known to fail: the turn gets prepared clips at once while the socket
-        // reconnects in the background.
-        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false);
+        // A join that is known to fail: the reply plays after its HTTP result, with prepared
+        // clips, while the socket reconnects in the background.
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false, false);
         return;
     }
     Runtime->SetThinking(true);
@@ -214,11 +214,17 @@ void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr
         }
         if (!bJoined)
         {
-            WeakThis->LiveMotionJoinGivenUp = ConversationIdStr;
+            WeakThis->StreamJoinGivenUp = ConversationIdStr;
         }
-        WeakThis->SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, bJoined);
+        WeakThis->SendCreateStagingRequest(
+            ConversationIdStr,
+            Message,
+            MakeUuidV4(),
+            0,
+            bJoined && WeakThis->WantsLiveMotion(),
+            bJoined && WeakThis->WantsStreamReplies());
     };
-    JoinLiveMotionStream(ConversationIdStr, Send);
+    JoinConversationStream(ConversationIdStr, Send);
     // A turn waits a few seconds for the stream at most; the join goes on in the background.
     FTSTicker::GetCoreTicker().AddTicker(
         FTickerDelegate::CreateLambda([Send](float)
@@ -235,12 +241,22 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     const FString& Message,
     const FString& IdempotencyKey,
     int32 Attempt,
-    bool bWithLiveMotion
+    bool bWithLiveMotion,
+    bool bStreamed
 )
 {
     // Retries reuse the key, so the server runs the turn once.
     const FString Key = IdempotencyKey.IsEmpty() ? MakeUuidV4() : IdempotencyKey;
-    Runtime->SetThinking(true);
+    if (Attempt == 0)
+    {
+        // A retry does not think again: a streamed reply can play already.
+        Runtime->SetThinking(true);
+        if (bStreamed)
+        {
+            // The server uses the Idempotency-Key as the task ID of the stream events.
+            Runtime->BeginStreamTurn(TCHAR_TO_UTF8(*Key));
+        }
+    }
     const std::string BaseUrl = Runtime->GetOptions().BaseUrl;
     const std::string Token = Runtime->GetOptions().ResolvedToken();
     // Same JSON body as the Web and Unity SDKs; the response is NPCP.
@@ -282,7 +298,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
     const int32 Generation = ConversationGeneration;
     HttpRequest->OnProcessRequestComplete().BindLambda(
-        [WeakThis, ConversationIdStr, Message, Key, Attempt, Generation, bWithLiveMotion](
+        [WeakThis, ConversationIdStr, Message, Key, Attempt, Generation, bWithLiveMotion, bStreamed](
             FHttpRequestPtr,
             FHttpResponsePtr Response,
             bool bConnectedSuccessfully
@@ -294,11 +310,17 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
             const bool bTransient = !bConnectedSuccessfully || Code == 409 || Code == 502 || Code == 503 || Code == 504;
             if (bTransient && Attempt < 2)
             {
-                Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1, bWithLiveMotion);
+                Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1, bWithLiveMotion, bStreamed);
                 return;
             }
+            const std::string TaskId = TCHAR_TO_UTF8(*Key);
             if (!bConnectedSuccessfully || !Response.IsValid() || !EHttpResponseCodes::IsOk(Code))
             {
+                // A reply that the stream delivered completely plays on.
+                if (bStreamed && Self->Runtime->HandleTurnFailure(TaskId))
+                {
+                    return;
+                }
                 Self->Runtime->SetThinking(false);
                 Self->OnError.Broadcast(DescribeHttpFailure(TEXT("Npcify staging request failed"), Response));
                 return;
@@ -309,10 +331,19 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                 std::vector<uint8_t> Bytes(Content.GetData(), Content.GetData() + Content.Num());
                 const Npcify::FStagingResultPayload Staging = Npcify::FNpcifySchemaMapper::DecodeStaging(Bytes);
                 Self->Runtime->SetActiveStagingId(Staging.StagingId);
+                // The stream plays the reply already: the result only completes it.
+                if (bStreamed && Self->Runtime->HandleTurnResult(TaskId, Staging))
+                {
+                    return;
+                }
                 Self->PrepareAndPlayStaging(Staging);
             }
             catch (const std::exception& Ex)
             {
+                if (bStreamed && Self->Runtime->HandleTurnFailure(TaskId))
+                {
+                    return;
+                }
                 Self->Runtime->SetThinking(false);
                 Self->OnError.Broadcast(UTF8_TO_TCHAR(Ex.what()));
             }

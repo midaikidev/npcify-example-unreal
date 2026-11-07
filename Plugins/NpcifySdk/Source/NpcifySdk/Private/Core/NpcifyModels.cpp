@@ -272,6 +272,7 @@ namespace Npcify
         Block.EndTime = GetDoubleField(MapVal, "endTime", Block.StartTime);
         Block.Text = GetStringField(MapVal, "text");
         Block.Duration = GetDoubleField(MapVal, "duration", std::max(0.0, Block.EndTime - Block.StartTime));
+        Block.bPending = GetBoolField(MapVal, "pending", false);
 
         const FNpcifyMsgPackValue* AudioMap = MapVal.FindField("audio");
         if (AudioMap && AudioMap->IsMap())

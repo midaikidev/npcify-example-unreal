@@ -67,6 +67,11 @@ namespace Npcify
         std::vector<FStagingVisemeCue> Visemes;
         std::vector<FStagingWordCue> Words;
         std::vector<FStagingCharacterCue> Characters;
+        /**
+         * The last speech block of a streamed reply can still grow: later revisions extend its
+         * timing and lip-sync until its synthesis and alignment finish (docs/streaming_reply.md).
+         */
+        bool bPending = false;
     };
 
     struct FStagingExpressionClip

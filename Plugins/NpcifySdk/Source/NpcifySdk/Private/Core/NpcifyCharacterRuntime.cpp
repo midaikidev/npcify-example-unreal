@@ -7,190 +7,6 @@
 
 namespace Npcify
 {
-    FNpcifyStagingPlayer::FNpcifyStagingPlayer(
-        FNpcifyFacialMixer& InFacialMixer,
-        FNpcifyVisemePlayer& InVisemePlayer
-    )
-        : FacialMixer(InFacialMixer)
-        , VisemePlayer(InVisemePlayer)
-    {
-    }
-
-    const FStagingDialogueBlock* FNpcifyStagingPlayer::GetCurrentBlock() const
-    {
-        if (!bHasStaging || ActiveBlockIndex < 0 ||
-            static_cast<size_t>(ActiveBlockIndex) >= ActiveStaging.Timeline.Dialogue.size())
-        {
-            return nullptr;
-        }
-        return &ActiveStaging.Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)];
-    }
-
-    FNpcifyPlaybackCursor FNpcifyStagingPlayer::GetCursor() const
-    {
-        FNpcifyPlaybackCursor Out;
-        Out.TimeSeconds = CurrentTimeSeconds;
-        Out.DurationSeconds = TotalDurationSeconds;
-        const FStagingDialogueBlock* Block = GetCurrentBlock();
-        Out.BlockId = Block ? Block->Id : "";
-        return Out;
-    }
-
-    void FNpcifyStagingPlayer::Play(const FStagingResultPayload& Staging)
-    {
-        Stop();
-        bHasStaging = true;
-        ActiveStaging = Staging;
-        CurrentTimeSeconds = 0.0;
-        bIsPlaying = true;
-        CurrentText = Staging.Text;
-        RevealedText.clear();
-
-        double ComputedEnd = Staging.Timeline.Duration;
-        for (const auto& B : Staging.Timeline.Dialogue) ComputedEnd = std::max(ComputedEnd, B.EndTime);
-        for (const auto& E : Staging.Timeline.Expressions) ComputedEnd = std::max(ComputedEnd, E.EndTime);
-        for (const auto& A : Staging.Timeline.Animations) ComputedEnd = std::max(ComputedEnd, A.EndTime);
-        TotalDurationSeconds = std::max(0.01, ComputedEnd);
-
-        Tick(0.0);
-    }
-
-    void FNpcifyStagingPlayer::Stop()
-    {
-        const FStagingDialogueBlock* Prev = GetCurrentBlock();
-        if (bIsPlaying && Prev && OnDialogueBlockEnded)
-        {
-            OnDialogueBlockEnded(*Prev);
-        }
-        bHasStaging = false;
-        ActiveBlockIndex = -1;
-        NextCharIndex = 0;
-        CurrentTimeSeconds = 0.0;
-        TotalDurationSeconds = 0.0;
-        bIsPlaying = false;
-        TriggeredExpressionIds.clear();
-        TriggeredAnimationIds.clear();
-        VisemePlayer.Clear();
-        FacialMixer.ClearVisemes();
-    }
-
-    void FNpcifyStagingPlayer::Tick(double DeltaTimeSeconds, float FallbackAudioRms)
-    {
-        if (!bIsPlaying || !bHasStaging)
-        {
-            FacialMixer.Update(static_cast<float>(std::max(0.0, DeltaTimeSeconds)));
-            return;
-        }
-
-        const double Dt = std::max(0.0, DeltaTimeSeconds);
-        CurrentTimeSeconds += Dt;
-
-        const auto& Timeline = ActiveStaging.Timeline;
-        for (size_t i = 0; i < Timeline.Expressions.size(); ++i)
-        {
-            const auto& Clip = Timeline.Expressions[i];
-            const std::string Key = !Clip.Id.empty() ? Clip.Id : ("expr-" + std::to_string(i));
-            if (CurrentTimeSeconds >= Clip.StartTime && TriggeredExpressionIds.insert(Key).second)
-            {
-                const float Dur = static_cast<float>(std::max(0.2, Clip.EndTime - Clip.StartTime));
-                FacialMixer.PlayCue(Clip.Expression, static_cast<float>(Clip.Weight), Dur);
-                if (OnExpressionClipTriggered) OnExpressionClipTriggered(Clip);
-            }
-        }
-
-        for (size_t i = 0; i < Timeline.Animations.size(); ++i)
-        {
-            const auto& Clip = Timeline.Animations[i];
-            const std::string Key = !Clip.Id.empty() ? Clip.Id : ("anim-" + std::to_string(i));
-            if (CurrentTimeSeconds >= Clip.StartTime && TriggeredAnimationIds.insert(Key).second)
-            {
-                if (OnAnimationClipTriggered) OnAnimationClipTriggered(Clip);
-            }
-        }
-
-        int NewBlockIdx = -1;
-        for (size_t i = 0; i < Timeline.Dialogue.size(); ++i)
-        {
-            const auto& B = Timeline.Dialogue[i];
-            if (CurrentTimeSeconds >= B.StartTime && CurrentTimeSeconds <= B.EndTime)
-            {
-                NewBlockIdx = static_cast<int>(i);
-                break;
-            }
-        }
-
-        if (NewBlockIdx != ActiveBlockIndex)
-        {
-            if (ActiveBlockIndex >= 0 && static_cast<size_t>(ActiveBlockIndex) < Timeline.Dialogue.size())
-            {
-                if (OnDialogueBlockEnded) OnDialogueBlockEnded(Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)]);
-            }
-            ActiveBlockIndex = NewBlockIdx;
-            NextCharIndex = 0;
-
-            if (ActiveBlockIndex >= 0)
-            {
-                const auto& Block = Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)];
-                CurrentText = Block.Text;
-                RevealedText.clear();
-                VisemePlayer.LoadCues(Block.Visemes);
-                if (OnDialogueBlockStarted) OnDialogueBlockStarted(Block);
-            }
-            else
-            {
-                VisemePlayer.Clear();
-                FacialMixer.ClearVisemes();
-            }
-        }
-
-        if (ActiveBlockIndex >= 0)
-        {
-            const auto& Block = Timeline.Dialogue[static_cast<size_t>(ActiveBlockIndex)];
-            const double LocalTime = std::max(0.0, CurrentTimeSeconds - Block.StartTime);
-            if (!Block.Characters.empty())
-            {
-                while (static_cast<size_t>(NextCharIndex) < Block.Characters.size())
-                {
-                    const auto& Cue = Block.Characters[static_cast<size_t>(NextCharIndex)];
-                    if (LocalTime < Cue.StartTime) break;
-                    RevealedText += Cue.Character;
-                    ++NextCharIndex;
-                    if (OnCharacterRevealed) OnCharacterRevealed(RevealedText, Cue);
-                }
-            }
-            else if (!Block.Text.empty())
-            {
-                const double BlockDur = std::max(0.05, Block.EndTime - Block.StartTime);
-                const double Ratio = std::max(0.0, std::min(1.0, LocalTime / BlockDur));
-                const int TargetCount = static_cast<int>( std::round(Ratio * static_cast<double>(Block.Text.size())));
-                if (TargetCount > NextCharIndex)
-                {
-                    NextCharIndex = TargetCount;
-                    RevealedText = Block.Text.substr(0, static_cast<size_t>(NextCharIndex));
-                }
-            }
-
-            if (Block.Type == "speech")
-            {
-                FacialMixer.SetVisemeWeights(VisemePlayer.Evaluate(LocalTime, FallbackAudioRms));
-            }
-            else
-            {
-                FacialMixer.ClearVisemes();
-            }
-        }
-
-        FacialMixer.Update(static_cast<float>(Dt));
-
-        if (CurrentTimeSeconds >= TotalDurationSeconds)
-        {
-            const FStagingResultPayload Completed = ActiveStaging;
-            RevealedText = Completed.Text;
-            Stop();
-            if (OnStagingCompleted) OnStagingCompleted(Completed);
-        }
-    }
-
     FNpcifyCharacterRuntime::FNpcifyCharacterRuntime(const FNpcifyOptions& InOptions)
         : Options(InOptions)
         , StagingPlayer(Expressions, VisemePlayer)
@@ -211,7 +27,7 @@ namespace Npcify
         };
         StagingPlayer.OnStagingCompleted = [this](const FStagingResultPayload& Staging)
         {
-            if (OnSpeechEnd) OnSpeechEnd(Staging);
+            HandleStagingCompleted(Staging);
         };
     }
 
@@ -294,6 +110,7 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::ResetConversationState()
     {
+        StopStreamTurns();
         StagingPlayer.Stop();
         bThinking = false;
         ActiveStagingId.clear();
@@ -306,6 +123,12 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::PlayStaging(const FStagingResultPayload& Staging)
     {
+        // A staging played as a whole replaces a streamed reply.
+        if (PlayingTurn)
+        {
+            PlayingTurn->Stop();
+            PlayingTurn.reset();
+        }
         bThinking = false;
         ActiveStagingId = Staging.StagingId;
         LastOptions = Staging.Options;
@@ -336,6 +159,11 @@ namespace Npcify
     void FNpcifyCharacterRuntime::StopSpeaking()
     {
         bThinking = false;
+        if (PlayingTurn)
+        {
+            PlayingTurn->Stop();
+            PlayingTurn.reset();
+        }
         StagingPlayer.Stop();
     }
 

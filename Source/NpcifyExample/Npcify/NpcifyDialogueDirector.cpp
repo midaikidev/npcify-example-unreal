@@ -355,8 +355,10 @@ void ANpcifyDialogueDirector::HandleSpeechEnd(const FString& StagingId, const FS
 
 void ANpcifyDialogueDirector::HandleError(const FString& Message)
 {
-	// Audio problems do not stop the conversation; text and timeline still play.
-	if (Phase == EPhase::Waiting)
+	// Audio problems do not stop the conversation; text and timeline still play. A failed turn
+	// can also stop a streamed reply that started to play (Npcify SDK 0.6.0).
+	const bool bStoppedReply = Phase == EPhase::Speaking && Active && !Active->Npcify->IsSpeaking();
+	if (Phase == EPhase::Waiting || bStoppedReply)
 	{
 		ShowError(Message);
 	}

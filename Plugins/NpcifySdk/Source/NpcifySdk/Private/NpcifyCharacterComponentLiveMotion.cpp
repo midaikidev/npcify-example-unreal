@@ -174,15 +174,15 @@ void UNpcifyCharacterComponent::PrepareLiveMotion()
     {
         return;
     }
-    if (LiveMotionSocket.IsValid() &&
-        (LiveMotionSocket->IsRefused(ConversationIdStr) || LiveMotionSocket->IsFailing(ConversationIdStr)))
+    if (StreamSocket.IsValid() &&
+        (StreamSocket->IsRefused(ConversationIdStr) || StreamSocket->IsFailing(ConversationIdStr)))
     {
         // The frames could not reach this client: a warm-up would cost the owner for nothing.
         return;
     }
     LiveMotionPreparedConversation = ConversationIdStr;
     // Join the stream now, so that the first reply does not wait for it.
-    JoinLiveMotionStream(ConversationIdStr, nullptr);
+    JoinConversationStream(ConversationIdStr, nullptr);
     TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
     Request->SetURL(FString::Printf(
         TEXT("%s/conversations/%s/motion/warm-up"),
@@ -202,51 +202,6 @@ void UNpcifyCharacterComponent::PrepareLiveMotion()
         UE_LOG(LogNpcifyLiveMotion, Log, TEXT("Live motion warm-up: %s"), bWarming ? TEXT("warming") : TEXT("not warming"));
     });
     Request->ProcessRequest();
-}
-
-void UNpcifyCharacterComponent::JoinLiveMotionStream(const FString& ConversationIdStr, TFunction<void(bool)> OnDone)
-{
-    if (!LiveMotionSocket.IsValid())
-    {
-        LiveMotionSocket = MakeShared<FNpcifyConversationSocket>(Runtime->GetOptions().BaseUrl, Runtime->GetOptions().ResolvedToken());
-        TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
-        LiveMotionSocket->OnStreamEvent = [WeakThis](const Npcify::FNpcifyMsgPackValue& Event)
-        {
-            if (WeakThis.IsValid())
-            {
-                WeakThis->HandleLiveMotionEvent(Event);
-            }
-        };
-        LiveMotionSocket->OnLog = [](const FString& Message)
-        {
-            UE_LOG(LogNpcifyLiveMotion, Log, TEXT("%s"), *Message);
-        };
-    }
-    LiveMotionSocket->Join(ConversationIdStr, MoveTemp(OnDone));
-}
-
-void UNpcifyCharacterComponent::HandleLiveMotionEvent(const Npcify::FNpcifyMsgPackValue& Event)
-{
-    if (!Runtime.IsValid())
-    {
-        return;
-    }
-    try
-    {
-        Npcify::FNpcifyMotionFramesEvent Motion;
-        if (Npcify::FNpcifyMotionFrames::TryParseEvent(Event, Motion) && Runtime->GetLiveMotion().Push(Motion))
-        {
-            OnLiveMotionFrames.Broadcast(
-                UTF8_TO_TCHAR(Motion.StagingId.c_str()),
-                static_cast<int32>(Motion.StartFrame),
-                Motion.FrameCount);
-        }
-    }
-    catch (const std::exception& Ex)
-    {
-        // An invalid event never stops the speech of the staging.
-        UE_LOG(LogNpcifyLiveMotion, Warning, TEXT("Dropped live motion frames: %s"), UTF8_TO_TCHAR(Ex.what()));
-    }
 }
 
 void UNpcifyCharacterComponent::DownloadMotionTrack(const std::string& StagingId, const Npcify::FStagingMotionTrack& Track)

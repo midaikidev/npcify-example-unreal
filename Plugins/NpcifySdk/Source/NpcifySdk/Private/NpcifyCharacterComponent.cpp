@@ -38,7 +38,7 @@ void UNpcifyCharacterComponent::EndPlay(const EEndPlayReason::Type EndPlayReason
     // Late responses and waiting turns of this component must not run after EndPlay.
     ++ConversationGeneration;
     UnbindLiveMotionMesh();
-    LiveMotionSocket.Reset();
+    StreamSocket.Reset();
     Runtime.Reset();
     Super::EndPlay(EndPlayReason);
 }
@@ -302,9 +302,9 @@ void UNpcifyCharacterComponent::ResetConversation()
     StopSpeaking();
     ++ConversationGeneration;
     Runtime->ResetConversationState();
-    if (LiveMotionSocket.IsValid()) LiveMotionSocket->Leave();
+    if (StreamSocket.IsValid()) StreamSocket->Leave();
     LiveMotionPreparedConversation.Empty();
-    LiveMotionJoinGivenUp.Empty();
+    StreamJoinGivenUp.Empty();
 }
 
 void UNpcifyCharacterComponent::SetEmotion(const FString& Expression, float Weight)
@@ -406,9 +406,9 @@ void UNpcifyCharacterComponent::RebuildRuntime()
     // A new endpoint or key needs a new conversation stream, and the requests of the old
     // runtime must not continue with it.
     ++ConversationGeneration;
-    LiveMotionSocket.Reset();
+    StreamSocket.Reset();
     LiveMotionPreparedConversation.Empty();
-    LiveMotionJoinGivenUp.Empty();
+    StreamJoinGivenUp.Empty();
     bLiveMotionInfoKnown = false;
     Runtime->OnMotionTrackRequested = [this](const std::string& StagingId, const Npcify::FStagingMotionTrack& Track)
     {
@@ -434,6 +434,15 @@ void UNpcifyCharacterComponent::RebuildRuntime()
     {
         HandleAudioBlock(Block, Audio);
     };
+    Runtime->OnBlockAudioRequested = [this](const std::string& TaskId, const std::string& BlockId, const std::string& Url)
+    {
+        DownloadBlockAudio(TaskId, BlockId, Url);
+    };
+    Runtime->OnError = [this](const std::string& Message)
+    {
+        OnError.Broadcast(UTF8_TO_TCHAR(Message.c_str()));
+    };
+    Runtime->OnStreamNote = &UNpcifyCharacterComponent::LogStreamNote;
 }
 
 void UNpcifyCharacterComponent::UpdateGazeLayer()

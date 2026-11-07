@@ -444,14 +444,21 @@ namespace Npcify
             return true;
         case 5:
         case 6:
-            BinaryEvent = Packet.SocketType == 5 ? FNpcifySocketIo::ReadEventName(Packet.Json) : std::string();
-            BinaryExpected = Packet.Attachments;
-            BinaryParts.clear();
-            if (BinaryExpected == 0)
+        {
+            FBinaryEvent Event;
+            Event.Name = Packet.SocketType == 5 ? FNpcifySocketIo::ReadEventName(Packet.Json) : std::string();
+            Event.Expected = Packet.Attachments;
+            if (Event.Expected <= 0)
             {
-                Dispatch();
+                Dispatch(std::move(Event));
+            }
+            else if (BinaryEvents.size() < 1024)
+            {
+                BinaryEvents.push_back(std::move(Event));
+                PairAttachments();
             }
             return true;
+        }
         default:
             return true;
         }
@@ -459,25 +466,33 @@ namespace Npcify
 
     void FNpcifyConversationSession::HandleBinary(const uint8_t* Data, size_t Size)
     {
-        if (BinaryExpected <= static_cast<int>(BinaryParts.size()))
+        if (Attachments.size() < 1024)
         {
-            return;
+            Attachments.emplace_back(Data, Data + Size);
         }
-        BinaryParts.emplace_back(Data, Data + Size);
-        if (static_cast<int>(BinaryParts.size()) == BinaryExpected)
+        PairAttachments();
+    }
+
+    void FNpcifyConversationSession::PairAttachments()
+    {
+        while (!BinaryEvents.empty() && !Attachments.empty())
         {
-            Dispatch();
+            FBinaryEvent& Head = BinaryEvents.front();
+            Head.Parts.push_back(std::move(Attachments.front()));
+            Attachments.pop_front();
+            if (static_cast<int>(Head.Parts.size()) >= Head.Expected)
+            {
+                FBinaryEvent Event = std::move(Head);
+                BinaryEvents.pop_front();
+                Dispatch(std::move(Event));
+            }
         }
     }
 
-    void FNpcifyConversationSession::Dispatch()
+    void FNpcifyConversationSession::Dispatch(FBinaryEvent Binary)
     {
-        const std::string Name = BinaryEvent;
-        std::vector<std::vector<uint8_t>> Parts;
-        Parts.swap(BinaryParts);
-        BinaryEvent.clear();
-        BinaryExpected = 0;
-        if (Name != "conversations:stream" || Parts.size() != 1 || !OnStreamEvent)
+        const std::vector<std::vector<uint8_t>>& Parts = Binary.Parts;
+        if (Binary.Name != "conversations:stream" || Parts.size() != 1 || !OnStreamEvent)
         {
             return;
         }

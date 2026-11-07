@@ -4,6 +4,7 @@
 #include "Core/NpcifyFacialMixer.h"
 #include "Core/NpcifyLiveMotion.h"
 #include "Core/NpcifyModels.h"
+#include "Core/NpcifyStreamTurn.h"
 
 #include <cstdint>
 #include <functional>
@@ -42,26 +43,47 @@ namespace Npcify
         std::function<void(const FStagingResultPayload&)> OnStagingCompleted;
 
         bool IsPlaying() const { return bIsPlaying; }
+        /**
+         * A streamed staging waits for its next dialogue block (docs/streaming_reply.md). The
+         * staging clock stops meanwhile; the playback stays on.
+         */
+        bool IsWaitingForBlock() const { return bIsPlaying && bWaiting; }
         double GetTimeSeconds() const { return CurrentTimeSeconds; }
         double GetDurationSeconds() const { return TotalDurationSeconds; }
-        const FStagingResultPayload* GetCurrentStaging() const { return bHasStaging ? &ActiveStaging : nullptr; }
+        const FStagingResultPayload* GetCurrentStaging() const { return ActiveStaging.get(); }
         const FStagingDialogueBlock* GetCurrentBlock() const;
         const std::string& GetCurrentText() const { return CurrentText; }
         const std::string& GetRevealedText() const { return RevealedText; }
         FNpcifyPlaybackCursor GetCursor() const;
 
         void Play(const FStagingResultPayload& Staging);
+        /**
+         * Plays a staging whose dialogue still grows (a streamed reply). The clock stops at the
+         * first of the dialogue blocks that cannot play yet (ReadyBlocks: the leading blocks that
+         * can), and at the end of the dialogue until bComplete. The staging object stays shared:
+         * a revision changes it, then UpdateStream.
+         */
+        void PlayStream(std::shared_ptr<const FStagingResultPayload> Staging, size_t ReadyBlocks, bool bComplete);
+        /** The streamed staging that plays has more ready blocks, or its complete dialogue. */
+        void UpdateStream(size_t ReadyBlocks, bool bComplete);
         void Stop();
         void Tick(double DeltaTimeSeconds, float FallbackAudioRms = 0.0f);
 
     private:
+        void Start(std::shared_ptr<const FStagingResultPayload> Staging, bool bInStreamed, size_t InReadyBlocks, bool bComplete);
+        void RecomputeDuration();
+        double AvailableEnd() const;
+
         FNpcifyFacialMixer& FacialMixer;
         FNpcifyVisemePlayer& VisemePlayer;
         std::set<std::string> TriggeredExpressionIds;
         std::set<std::string> TriggeredAnimationIds;
 
-        bool bHasStaging = false;
-        FStagingResultPayload ActiveStaging;
+        std::shared_ptr<const FStagingResultPayload> ActiveStaging;
+        bool bStreamed = false;
+        bool bStreamComplete = true;
+        size_t ReadyBlocks = 0;
+        bool bWaiting = false;
         int ActiveBlockIndex = -1;
         int NextCharIndex = 0;
         double CurrentTimeSeconds = 0.0;
@@ -121,7 +143,33 @@ namespace Npcify
         void PlayStaging(const FStagingResultPayload& Staging);
         /** Forgets the conversation IDs and the reply options of the last staging. */
         void ResetConversationState();
+        /** Stops the speech that plays; a streamed reply that plays does not continue. */
         void StopSpeaking();
+
+        /**
+         * Replies that play while they stream (docs/streaming_reply.md), in
+         * NpcifyCharacterRuntimeStream.cpp. Call BeginStreamTurn with the Idempotency-Key of a
+         * turn request when the conversation stream has joined, pass the turn events of
+         * conversations:stream to HandleStreamEvent, then the HTTP result to HandleTurnResult or
+         * the failure to HandleTurnFailure.
+         */
+        void BeginStreamTurn(const std::string& TaskId);
+        void HandleStreamEvent(const FNpcifyMsgPackValue& Event);
+        /** True when the stream plays this reply: then do not play Result again. */
+        bool HandleTurnResult(const std::string& TaskId, const FStagingResultPayload& Result);
+        /**
+         * The HTTP request of a turn failed. True when the stream delivered the whole reply and its
+         * options: the reply plays on, and the failure is no error of the turn.
+         */
+        bool HandleTurnFailure(const std::string& TaskId);
+        /** The stored audio of a block that OnBlockAudioRequested asked for; empty after a failed download. */
+        void SetBlockAudio(const std::string& TaskId, const std::string& BlockId, const std::vector<uint8_t>& Bytes);
+        /** A block of a streamed reply needs its stored audio: the engine downloads it, then SetBlockAudio. */
+        std::function<void(const std::string& TaskId, const std::string& BlockId, const std::string& Url)> OnBlockAudioRequested;
+        /** True for the turn events of conversations:stream (not motion_frames). */
+        static bool IsTurnEvent(const FNpcifyMsgPackValue& Event);
+        /** Notes of streamed turns with the time since their request, for logs. */
+        std::function<void(const std::string&)> OnStreamNote;
         void PlayAnimation(const std::string& AnimationId, bool bLoop = false);
 
         void LookAt(float YawDegrees, float PitchDegrees);
@@ -153,6 +201,15 @@ namespace Npcify
 
     private:
         void HandleDialogueBlockStarted(const FStagingDialogueBlock& Block);
+        void HandleStagingCompleted(const FStagingResultPayload& Staging);
+        std::shared_ptr<FNpcifyStreamTurn> FindTurn(const std::string& TaskId) const;
+        void PumpTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
+        void StartStreamPlayback(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
+        void EndTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn);
+        void ForgetClosedTurns();
+        void NoteTurn(const FNpcifyStreamTurn& Turn, const std::string& Message) const;
+        void NoteMilestones(FNpcifyStreamTurn& Turn) const;
+        void StopStreamTurns();
 
         FNpcifyOptions Options;
         FNpcifyFacialMixer Expressions;
@@ -160,6 +217,9 @@ namespace Npcify
         FNpcifyStagingPlayer StagingPlayer;
         FNpcifyLiveMotionPlayer LiveMotion;
         std::unique_ptr<FNpcifyBakedConversation> BakedConversation;
+        /** Streamed turns that can still start to play, oldest first, and the turn that plays. */
+        std::vector<std::shared_ptr<FNpcifyStreamTurn>> StreamTurns;
+        std::shared_ptr<FNpcifyStreamTurn> PlayingTurn;
 
         std::string ConversationId;
         std::string ActiveStagingId;

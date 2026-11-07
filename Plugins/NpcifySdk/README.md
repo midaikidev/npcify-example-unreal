@@ -12,11 +12,12 @@ Unreal Engine 5 C++ & Blueprint plugin (`NpcifySdk.uplugin`) for embedding Npcif
   - Automatic binding to owner `USkeletalMeshComponent` morph targets and 3D spatial `UAudioComponent` (`USoundWaveProcedural`). See [Spatial Voice](#spatial-voice).
   - Voice input: push-to-talk with a key or your own input, or listening started by code. See [Voice Input](#voice-input).
   - Live motion: the generated body motion of each reply on a VRM skeleton, and `PrepareLiveMotion()`. See [Live Motion](#live-motion).
+  - Streamed replies: a reply starts to play when the audio of its first block is complete, before the reply is complete. See [Streamed Replies](#streamed-replies).
   - Fine-grained control: `LookAtActor`, `LookAtComponent`, `LookAtLocation`, `ClearLookAt`, `PlayAnimation`, `SetEmotion`, `PlayExpressionCue`, `Speak`, `Reply`, `StartBakedConversation`, `GetBoneTransform`, `GetMouthOpenness`.
 
 ## Installation
 
-Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.5.0`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
+Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.6.0`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
 
 ```bash
 mkdir -p Plugins/NpcifySdk
@@ -50,10 +51,11 @@ void AMyNpcCharacter::BeginPlay()
 
 ## Speech Audio and Conversations
 
-- Speech audio arrives as MPEG bytes (baked conversations) or as a signed URL
-  (live stagings). The component downloads URL audio before the staging starts
-  and decodes MPEG with the bundled [minimp3](https://github.com/lieff/minimp3)
-  (CC0) into a `USoundWaveProcedural`. WAV and raw PCM bytes also play.
+- Speech audio arrives as MPEG bytes (baked conversations and streamed replies)
+  or as a signed URL (the HTTP result of a turn). The component downloads URL
+  audio before the block or the staging starts and decodes MPEG with the
+  bundled [minimp3](https://github.com/lieff/minimp3) (CC0) into a
+  `USoundWaveProcedural`. WAV and raw PCM bytes also play.
 - Live requests send the same JSON bodies as the Web and Unity SDKs and accept
   NPCP responses. Retries keep one RFC 4122 `Idempotency-Key`.
 - `ResetConversation()` stops speech and ignores late responses of the previous
@@ -61,6 +63,35 @@ void AMyNpcCharacter::BeginPlay()
   option of a baked conversation.
 - `OnAnimationRequested(AnimationId, bLoop)` reports the animation cues of a
   staging; play them with your own animation assets.
+
+## Streamed Replies
+
+Since 0.6.0 a reply plays while the server makes it, as in the Web SDK
+([streaming reply](../../docs/streaming_reply.md#engine-sdks)). The first
+dialogue block plays when its audio is complete; the next blocks follow without
+a gap and without a repeated block.
+
+- **Transport:** the component joins the conversation stream (Socket.IO over the
+  engine's `WebSockets` module) when the conversation starts. A turn waits for
+  the join for 3 s at most.
+- **Audio:** the speech of a block arrives as MP3 chunks. When the chunks of a
+  block are complete, the block can start (minimp3 decodes it). The last block
+  can play while the server still aligns its lip-sync: later revisions add to
+  its visemes and text timing. A block whose chunks did not arrive plays the
+  stored audio of the HTTP result.
+- **Clock:** at the end of the ready blocks the reply waits with a neutral mouth
+  until the next block can play. The staging clock, and with it the live motion
+  frames, waits too.
+- **Events:** `OnSpeechStart` fires when the first block plays, with the text
+  known at that time. `OnSpeechEnd` fires once, after the last block and when
+  the reply options are known, so `GetCurrentReplyOptions()` gives them.
+- **Fallback:** without the stream (no join in time, a lost connection, an older
+  server) the reply plays after its HTTP result, as before 0.6.0. A stream error
+  stops the reply; `OnError` then reports the failed request. `StopSpeaking()`
+  stops a streamed reply for good.
+- **Options:** `bStreamReplies` turns streaming off. The log category
+  `LogNpcifyStream` reports when the first revision, the first audio and the
+  playback of each streamed reply came.
 
 ## Voice Input
 
@@ -144,8 +175,9 @@ prepared animation clips (`OnAnimationRequested`).
   time of the first played frame), `OnLiveMotionFrames` and
   `GetHumanoidBoneName(VrmBone)`.
 - **Transport:** the frames come on the conversation stream (Socket.IO over the
-  engine's `WebSockets` module). A turn declares the frames only when the
-  stream has joined the conversation, and waits for the join for 3 s at most.
+  engine's `WebSockets` module), with the streamed reply. A turn declares the
+  frames only when the stream has joined the conversation, and waits for the
+  join for 3 s at most.
   After that time, or at once while the stream fails, the turn plays the
   prepared clips and the stream connects again in the background. The SDK
   does not try again a conversation that the server refuses (for example
