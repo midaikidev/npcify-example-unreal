@@ -184,7 +184,16 @@ namespace Npcify
          * conversations:stream to HandleStreamEvent, then the HTTP result to HandleTurnResult or
          * the failure to HandleTurnFailure.
          */
-        void BeginStreamTurn(const std::string& TaskId);
+        /**
+         * A turn request starts: the character thinks until the reply of its newest request plays,
+         * or that request fails. Returns the order of the request, for BeginStreamTurn,
+         * EndTurnRequest and PlayTurnStaging.
+         */
+        uint64_t BeginTurnRequest();
+        /** A turn request failed: thinking ends when no later request started. */
+        void EndTurnRequest(uint64_t Sequence);
+        /** Sequence: the order from BeginTurnRequest (0: a new order). */
+        void BeginStreamTurn(const std::string& TaskId, uint64_t Sequence = 0);
         /** The turn request is sent again: the server can run the turn again under the same task ID. */
         void NoteTurnRetry(const std::string& TaskId);
         void HandleStreamEvent(const FNpcifyMsgPackValue& Event);
@@ -243,6 +252,10 @@ namespace Npcify
 
     private:
         void HandleDialogueBlockStarted(const FStagingDialogueBlock& Block);
+        /** bEndsThinking: false for the result of an older request while a newer one is in flight. */
+        void PlayWholeStaging(const FStagingResultPayload& Staging, bool bEndsThinking);
+        /** Thinking belongs to the newest request: an older reply that plays or fails does not end it. */
+        bool IsNewestRequest(uint64_t Sequence) const { return Sequence >= NewestRequest; }
         void HandleStagingCompleted(const FStagingResultPayload& Staging);
         std::shared_ptr<FNpcifyStreamTurn> FindTurn(const std::string& TaskId) const;
         /** What a stop leaves to report once the state of the runtime is consistent. */
@@ -264,7 +277,7 @@ namespace Npcify
         void Report(const FStoppedSpeech& Stop);
         void EndTurn(const std::shared_ptr<FNpcifyStreamTurn>& Turn, ENpcifyTurnStop Reason);
         void ForgetClosedTurns();
-        void SettleThinking();
+        void SettleThinking(const FNpcifyStreamTurn& Turn);
         void NoteTurn(const FNpcifyStreamTurn& Turn, const std::string& Message) const;
         void NoteMilestones(FNpcifyStreamTurn& Turn) const;
         void StopStreamTurns();
@@ -282,6 +295,8 @@ namespace Npcify
         uint64_t PlayedSequence = 0;
         /** Counts the calls that start or stop speech: a handler of a stop can make one. */
         uint64_t PlayGeneration = 0;
+        /** The order of the newest turn request. */
+        uint64_t NewestRequest = 0;
 
         std::string ConversationId;
         std::string ActiveStagingId;

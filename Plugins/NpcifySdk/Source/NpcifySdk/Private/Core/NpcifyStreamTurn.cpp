@@ -40,11 +40,7 @@ namespace Npcify
             return Text;
         }
 
-        uint64_t NextTurnSequence()
-        {
-            static std::atomic<uint64_t> Counter{0};
-            return ++Counter;
-        }
+        std::atomic<uint64_t> TurnSequenceCounter{0};
 
         bool IsFinalStop(ENpcifyTurnStop Reason)
         {
@@ -61,9 +57,14 @@ namespace Npcify
         return Text;
     }
 
-    FNpcifyStreamTurn::FNpcifyStreamTurn(const std::string& InTaskId)
+    uint64_t FNpcifyStreamTurn::NextSequence()
+    {
+        return ++TurnSequenceCounter;
+    }
+
+    FNpcifyStreamTurn::FNpcifyStreamTurn(const std::string& InTaskId, uint64_t InSequence)
         : TaskId(NormalizeTaskId(InTaskId))
-        , Sequence(NextTurnSequence())
+        , Sequence(InSequence > 0 ? InSequence : NextSequence())
         , Payload(std::make_shared<FStagingResultPayload>())
     {
         Payload->ProtocolVersion = 1;
@@ -138,6 +139,13 @@ namespace Npcify
 
     bool FNpcifyStreamTurn::ApplyResult(const FStagingResultPayload& Result)
     {
+        const bool bRerun = bRerunExpected && !IsFinalStop(StopReason) && !Continues(Result.Timeline);
+        // The request is answered: no rerun comes any more.
+        bRerunExpected = false;
+        if (bRerun)
+        {
+            return false;
+        }
         if (StopReason == ENpcifyTurnStop::Rejected)
         {
             throw std::runtime_error(ChangedDialogueMessage);
@@ -442,6 +450,12 @@ namespace Npcify
 
     ENpcifyStreamChange FNpcifyStreamTurn::ApplyOptions(const FNpcifyMsgPackValue& Event)
     {
+        if (IsRerunPossible() && (!bHasFinal || EventString(Event, "text") != Payload->Text))
+        {
+            // After a retry these can be the options of a rerun whose other events are lost: they
+            // do not change this reply. The options come with the rerun or its result.
+            return ENpcifyStreamChange::None;
+        }
         if (bHasFinal)
         {
             return ENpcifyStreamChange::None;

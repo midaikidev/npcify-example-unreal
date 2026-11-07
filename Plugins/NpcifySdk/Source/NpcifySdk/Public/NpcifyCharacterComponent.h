@@ -385,7 +385,8 @@ private:
         const FString& IdempotencyKey,
         int32 Attempt,
         bool bWithLiveMotion,
-        bool bStreamed
+        bool bStreamed,
+        uint64_t Request
     );
     /** The conversation stream: NpcifyCharacterComponentStream.cpp. */
     bool WantsStreamReplies() const;

@@ -177,16 +177,18 @@ void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& Fol
 
 void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr, const FString& Message)
 {
+    // The character thinks until the reply of its newest request plays or fails.
+    const uint64_t Request = Runtime->BeginTurnRequest();
     if (!WantsLiveMotion() && !WantsStreamReplies())
     {
-        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false, false);
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false, false, Request);
         return;
     }
     // The streamed reply and the live motion frames arrive on the conversation stream while the
     // server makes the turn: use them only when the stream has joined the conversation.
     if (StreamSocket.IsValid() && StreamSocket->IsJoined(ConversationIdStr))
     {
-        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, WantsLiveMotion(), WantsStreamReplies());
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, WantsLiveMotion(), WantsStreamReplies(), Request);
         return;
     }
     if (StreamJoinGivenUp == ConversationIdStr ||
@@ -195,14 +197,13 @@ void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr
     {
         // A join that is known to fail: the reply plays after its HTTP result, with prepared
         // clips, while the socket reconnects in the background.
-        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false, false);
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false, false, Request);
         return;
     }
-    Runtime->SetThinking(true);
     TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
     const int32 Generation = ConversationGeneration;
     const TSharedRef<bool> bSent = MakeShared<bool>(false);
-    const TFunction<void(bool)> Send = [WeakThis, ConversationIdStr, Message, Generation, bSent](bool bJoined)
+    const TFunction<void(bool)> Send = [WeakThis, ConversationIdStr, Message, Generation, bSent, Request](bool bJoined)
     {
         if (*bSent)
         {
@@ -223,7 +224,8 @@ void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr
             MakeUuidV4(),
             0,
             bJoined && WeakThis->WantsLiveMotion(),
-            bJoined && WeakThis->WantsStreamReplies());
+            bJoined && WeakThis->WantsStreamReplies(),
+            Request);
     };
     JoinConversationStream(ConversationIdStr, Send);
     // A turn waits a few seconds for the stream at most; the join goes on in the background.
@@ -243,20 +245,16 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     const FString& IdempotencyKey,
     int32 Attempt,
     bool bWithLiveMotion,
-    bool bStreamed
+    bool bStreamed,
+    uint64_t Request
 )
 {
     // Retries reuse the key, so the server runs the turn once.
     const FString Key = IdempotencyKey.IsEmpty() ? MakeUuidV4() : IdempotencyKey;
-    if (Attempt == 0)
+    if (Attempt == 0 && bStreamed)
     {
-        // A retry does not think again: a streamed reply can play already.
-        Runtime->SetThinking(true);
-        if (bStreamed)
-        {
-            // The server uses the Idempotency-Key as the task ID of the stream events.
-            Runtime->BeginStreamTurn(TCHAR_TO_UTF8(*Key));
-        }
+        // The server uses the Idempotency-Key as the task ID of the stream events.
+        Runtime->BeginStreamTurn(TCHAR_TO_UTF8(*Key), Request);
     }
     const std::string BaseUrl = Runtime->GetOptions().BaseUrl;
     const std::string Token = Runtime->GetOptions().ResolvedToken();
@@ -299,7 +297,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
     const int32 Generation = ConversationGeneration;
     HttpRequest->OnProcessRequestComplete().BindLambda(
-        [WeakThis, ConversationIdStr, Message, Key, Attempt, Generation, bWithLiveMotion, bStreamed](
+        [WeakThis, ConversationIdStr, Message, Key, Attempt, Generation, bWithLiveMotion, bStreamed, Request](
             FHttpRequestPtr,
             FHttpResponsePtr Response,
             bool bConnectedSuccessfully
@@ -316,7 +314,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                     // The server can run the turn again; the start event of the rerun can be lost.
                     Self->Runtime->NoteTurnRetry(TCHAR_TO_UTF8(*Key));
                 }
-                Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1, bWithLiveMotion, bStreamed);
+                Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1, bWithLiveMotion, bStreamed, Request);
                 return;
             }
             const std::string TaskId = TCHAR_TO_UTF8(*Key);
@@ -327,7 +325,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                 {
                     return;
                 }
-                Self->Runtime->SetThinking(false);
+                Self->Runtime->EndTurnRequest(Request);
                 Self->OnError.Broadcast(DescribeHttpFailure(TEXT("Npcify staging request failed"), Response));
                 return;
             }
@@ -344,7 +342,8 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                     return;
                 }
                 Self->Runtime->SetActiveStagingId(Staging.StagingId);
-                Self->PrepareAndPlayStaging(Staging, PlaySequence);
+                // Also a turn without the stream keeps the order of the replies.
+                Self->PrepareAndPlayStaging(Staging, PlaySequence != 0 ? PlaySequence : Request);
             }
             catch (const std::exception& Ex)
             {
@@ -352,7 +351,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
                 {
                     return;
                 }
-                Self->Runtime->SetThinking(false);
+                Self->Runtime->EndTurnRequest(Request);
                 Self->OnError.Broadcast(UTF8_TO_TCHAR(Ex.what()));
             }
         }

@@ -57,8 +57,14 @@ namespace Npcify
     public:
         static constexpr const char* ChangedDialogueMessage = "A staging revision changed published dialogue.";
 
-        /** TaskId is the Idempotency-Key of the turn request; the server uses it as the task ID. */
-        explicit FNpcifyStreamTurn(const std::string& TaskId);
+        /**
+         * TaskId is the Idempotency-Key of the turn request; the server uses it as the task ID.
+         * Sequence: the order of the request (0: a new number).
+         */
+        explicit FNpcifyStreamTurn(const std::string& TaskId, uint64_t Sequence = 0);
+
+        /** A new request order: later requests have higher numbers. */
+        static uint64_t NextSequence();
 
         const std::string& GetTaskId() const { return TaskId; }
         /** Later turns have higher numbers. */
@@ -106,11 +112,12 @@ namespace Npcify
 
         /**
          * Applies the HTTP result. Returns false when the result plays as a whole: no revision
-         * arrived, or the server failed the stream (a rerun whose events did not arrive). A turn
-         * that the game stopped or that a newer reply replaced does not play again: it takes the
-         * complete staging of the result. Speech whose stream did not complete takes the stored
-         * audio of the result. Throws std::runtime_error when the result changes published
-         * dialogue, or when the SDK refused a revision of this turn.
+         * arrived, the server failed the stream, or after a retry the result does not continue the
+         * published dialogue (a rerun whose events did not arrive). A turn that the game stopped or
+         * that a newer reply replaced does not play again: it takes the complete staging of the
+         * result. Speech whose stream did not complete takes the stored audio of the result.
+         * Throws std::runtime_error when the result changes published dialogue without a retry,
+         * or when the SDK refused a revision of this turn.
          */
         bool ApplyResult(const FStagingResultPayload& Result);
 

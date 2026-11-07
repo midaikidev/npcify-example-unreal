@@ -128,8 +128,16 @@ namespace Npcify
 
     void FNpcifyCharacterRuntime::PlayStaging(const FStagingResultPayload& Staging)
     {
+        PlayWholeStaging(Staging, true);
+    }
+
+    void FNpcifyCharacterRuntime::PlayWholeStaging(const FStagingResultPayload& Staging, bool bEndsThinking)
+    {
         const uint64_t Generation = ++PlayGeneration;
-        bThinking = false;
+        if (bEndsThinking)
+        {
+            bThinking = false;
+        }
         // A staging played as a whole replaces the speech that plays.
         FStoppedSpeech Stop = StopPlayingTurn(ENpcifyTurnStop::Superseded);
         Stop.bStopped = StopPlayback() || Stop.bStopped;
@@ -162,6 +170,11 @@ namespace Npcify
             }
         }
         if (OnSpeechStart) OnSpeechStart(Staging);
+        if (Generation != PlayGeneration)
+        {
+            // A handler of the start played or stopped speech.
+            return;
+        }
         StagingPlayer.Play(Staging);
     }
 

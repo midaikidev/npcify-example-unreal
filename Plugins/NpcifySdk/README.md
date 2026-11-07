@@ -97,9 +97,11 @@ a gap and without a repeated block.
   `LogNpcifyStream` reports when the first revision, the first audio and the
   playback of each streamed reply came.
 - **Own integrations:** a host of `FNpcifyCharacterRuntime` that plays the audio
-  itself stops the voice of the current block on `OnSpeechStopped`, calls
-  `NoteTurnRetry` before it sends a turn request again, and plays a result that
-  `HandleTurnResult` gives back with `PlayTurnStaging` and its sequence.
+  itself stops the voice of the current block on `OnSpeechStopped`. For each
+  turn it calls `BeginTurnRequest` (its order goes to `BeginStreamTurn`),
+  `NoteTurnRetry` before it sends the request again, `EndTurnRequest` when the
+  request fails, and plays a result that `HandleTurnResult` gives back with
+  `PlayTurnStaging` and the order.
 
 ## Voice Input
 
