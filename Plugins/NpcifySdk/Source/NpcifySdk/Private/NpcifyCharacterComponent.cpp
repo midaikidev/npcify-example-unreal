@@ -1,5 +1,6 @@
 #include "NpcifyCharacterComponent.h"
 
+#include "NpcifyConversationSocket.h"
 #include "NpcifyMp3Decoder.h"
 
 #include "Dom/JsonObject.h"
@@ -32,7 +33,10 @@ void UNpcifyCharacterComponent::BeginPlay()
 
 void UNpcifyCharacterComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    CancelListening();
     if (AudioComponent && AudioComponent->IsPlaying()) AudioComponent->Stop();
+    UnbindLiveMotionMesh();
+    LiveMotionSocket.Reset();
     Runtime.Reset();
     Super::EndPlay(EndPlayReason);
 }
@@ -46,7 +50,9 @@ void UNpcifyCharacterComponent::TickComponent(
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
     EnsureInitialized();
     Runtime->GetExpressions().bAutoBlinkEnabled = bAutoBlink;
+    TickVoiceInput();
     UpdateGazeLayer();
+    UpdateLiveMotion(DeltaTime);
     Runtime->Tick(static_cast<double>(DeltaTime), 0.0f);
     ApplyMorphTargets();
 }
@@ -79,6 +85,22 @@ bool UNpcifyCharacterComponent::ConfigureFromJson(const FString& ConfigJson)
     }
     JsonObject->TryGetStringField(TEXT("characterId"), CharacterId);
     JsonObject->TryGetStringField(TEXT("apiKey"), ApiKey);
+    TArray<FString> ModeNames;
+    if (JsonObject->TryGetStringArrayField(TEXT("inputModes"), ModeNames))
+    {
+        InputModes.Reset();
+        for (const FString& Name : ModeNames)
+        {
+            if (Name == TEXT("options")) InputModes.Add(ENpcifyInputMode::Options);
+            else if (Name == TEXT("text")) InputModes.Add(ENpcifyInputMode::Text);
+            else if (Name == TEXT("voice")) InputModes.Add(ENpcifyInputMode::Voice);
+            else
+            {
+                OnError.Broadcast(FString::Printf(TEXT("inputModes has an unknown mode \"%s\"."), *Name));
+                return false;
+            }
+        }
+    }
     RebuildRuntime();
     return true;
 }
@@ -181,12 +203,36 @@ void UNpcifyCharacterComponent::CreateConversation()
 {
     EnsureInitialized();
     if (Runtime->HasBakedConversation()) { StartBakedConversation(TEXT("")); return; }
-    SendCreateConversationRequest(TEXT(""));
+    TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
+    // The character's info is read before the conversation starts: a configured InputModes
+    // is checked with it, and voice needs the owner's voice input.
+    CheckInputModesWithCharacter([WeakThis]()
+    {
+        if (WeakThis.IsValid()) WeakThis->SendCreateConversationRequest(TEXT(""));
+    });
 }
 
 void UNpcifyCharacterComponent::Speak(const FString& Message)
 {
     EnsureInitialized();
+    if (!RequireInputMode(Npcify::EInputMode::Text, TEXT("Typed replies are off"))) return;
+    SendReply(Message);
+}
+
+void UNpcifyCharacterComponent::Reply(const FString& OptionLabel)
+{
+    EnsureInitialized();
+    const std::vector<Npcify::EInputMode> Modes = CurrentInputModes();
+    if (InputModes.Num() > 0 && !Npcify::HasInputMode(Modes, Npcify::EInputMode::Text) &&
+        !RequireInputMode(Npcify::EInputMode::Options, TEXT("Reply options are off")))
+    {
+        return;
+    }
+    SendReply(OptionLabel);
+}
+
+void UNpcifyCharacterComponent::SendReply(const FString& Message)
+{
     if (Message.TrimStartAndEnd().IsEmpty()) { OnError.Broadcast(TEXT("Message must not be empty.")); return; }
     if (Runtime->HasBakedConversation())
     {
@@ -205,16 +251,17 @@ void UNpcifyCharacterComponent::Speak(const FString& Message)
     }
     const FString ConvId = UTF8_TO_TCHAR(Runtime->GetConversationId().c_str());
     if (ConvId.IsEmpty()) { SendCreateConversationRequest(Message); return; }
-    SendCreateStagingRequest(ConvId, Message, FString(), 0);
+    SendTurnRequest(ConvId, Message);
 }
-
-void UNpcifyCharacterComponent::Reply(const FString& OptionLabel) { Speak(OptionLabel); }
 
 bool UNpcifyCharacterComponent::LoadBakedConversationBytes(const TArray<uint8>& NpcpBytes, bool bAutoStart)
 {
     EnsureInitialized();
     try
     {
+        // A baked conversation permits only the Options mode.
+        CheckedInputModes = Npcify::ResolveInputModes(ToCoreInputModes(InputModes), false, true, false);
+        bInputModesChecked = true;
         std::vector<uint8_t> Bytes(NpcpBytes.GetData(), NpcpBytes.GetData() + NpcpBytes.Num());
         auto Baked = std::make_unique<Npcify::FNpcifyBakedConversation>(
             Npcify::FNpcifyBakedConversation::FromBytes(Bytes, TCHAR_TO_UTF8(*CharacterId))
@@ -253,6 +300,8 @@ void UNpcifyCharacterComponent::ResetConversation()
     StopSpeaking();
     ++ConversationGeneration;
     Runtime->ResetConversationState();
+    if (LiveMotionSocket.IsValid()) LiveMotionSocket->Leave();
+    LiveMotionPreparedConversation.Empty();
 }
 
 void UNpcifyCharacterComponent::SetEmotion(const FString& Expression, float Weight)
@@ -351,6 +400,14 @@ void UNpcifyCharacterComponent::RebuildRuntime()
 
     Runtime = MakeUnique<Npcify::FNpcifyCharacterRuntime>(Opts);
     Runtime->GetExpressions().bAutoBlinkEnabled = bAutoBlink;
+    // A new endpoint or key needs a new conversation stream.
+    LiveMotionSocket.Reset();
+    LiveMotionPreparedConversation.Empty();
+    bLiveMotionInfoKnown = false;
+    Runtime->OnMotionTrackRequested = [this](const std::string& StagingId, const Npcify::FStagingMotionTrack& Track)
+    {
+        DownloadMotionTrack(StagingId, Track);
+    };
     Runtime->OnSpeechStart = [this](const Npcify::FStagingResultPayload& Staging)
     {
         OnSpeechStart.Broadcast(UTF8_TO_TCHAR(Staging.StagingId.c_str()), UTF8_TO_TCHAR(Staging.Text.c_str()));

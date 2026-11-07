@@ -309,6 +309,26 @@ namespace Npcify
         bThinking = false;
         ActiveStagingId = Staging.StagingId;
         LastOptions = Staging.Options;
+        const FStagingMotionTrack& Track = Staging.Timeline.Motion;
+        if (Track.bValid && !LiveMotion.Has(Staging.StagingId))
+        {
+            // A replay plays its stored frames once they load; until then idle.
+            if (!Track.FramesData.empty())
+            {
+                try
+                {
+                    LiveMotion.Load(Staging.StagingId, Track, Track.FramesData);
+                }
+                catch (const std::exception& Error)
+                {
+                    if (OnError) OnError(Error.what());
+                }
+            }
+            else if (OnMotionTrackRequested)
+            {
+                OnMotionTrackRequested(Staging.StagingId, Track);
+            }
+        }
         if (OnSpeechStart) OnSpeechStart(Staging);
         StagingPlayer.Play(Staging);
     }
@@ -344,6 +364,12 @@ namespace Npcify
     void FNpcifyCharacterRuntime::Tick(double DeltaTimeSeconds, float FallbackAudioRms)
     {
         StagingPlayer.Tick(DeltaTimeSeconds, FallbackAudioRms);
+        // Live motion follows the staging clock; no staging: blend back to idle.
+        const FStagingResultPayload* Playing = StagingPlayer.IsPlaying() ? StagingPlayer.GetCurrentStaging() : nullptr;
+        LiveMotion.Update(
+            DeltaTimeSeconds,
+            Playing ? Playing->StagingId : std::string(),
+            Playing ? StagingPlayer.GetTimeSeconds() : -1.0);
     }
 
     void FNpcifyCharacterRuntime::HandleDialogueBlockStarted(const FStagingDialogueBlock& Block)

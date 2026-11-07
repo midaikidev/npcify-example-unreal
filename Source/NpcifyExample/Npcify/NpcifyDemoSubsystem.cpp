@@ -108,5 +108,6 @@ void UNpcifyDemoSubsystem::OnWorldBeginPlay(UWorld& World)
 	{
 		ANpcifyDemoAutotest* Autotest = World.SpawnActor<ANpcifyDemoAutotest>();
 		Autotest->OutputFolder = AutotestFolder;
+		FParse::Value(FCommandLine::Get(), TEXT("NpcifyAutotestReply="), Autotest->CustomReply);
 	}
 }

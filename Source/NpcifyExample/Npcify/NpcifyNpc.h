@@ -80,6 +80,13 @@ public:
 	void Reply(const FString& Message);
 	void EndConversation();
 
+	/**
+	 * The player showed that they will reply (they pressed the talk key or started to type):
+	 * warm up live motion. The SDK does it once per conversation and only for a character with
+	 * live motion on, so the first reply's motion does not wait for the GPU.
+	 */
+	void PrepareLiveMotion();
+
 	/** Turns towards an actor, or back to the start rotation for null. */
 	void FaceTowards(AActor* Target);
 

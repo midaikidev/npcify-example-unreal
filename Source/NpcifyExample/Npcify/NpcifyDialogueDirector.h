@@ -31,6 +31,8 @@ public:
 	void TryOpenNearby();
 	void Choose(int32 Index);
 	void Close();
+	/** Sends a typed reply, like the reply box (the NPC must allow custom replies). */
+	void SendCustomReply(const FString& Message);
 
 protected:
 	virtual void BeginPlay() override;
@@ -95,4 +97,5 @@ private:
 	bool bRetryOpens = false;
 	bool bEnding = false;
 	bool bPlayerConfigured = false;
+	bool bReplyWasFocused = false;
 };

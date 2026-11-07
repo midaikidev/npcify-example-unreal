@@ -97,10 +97,20 @@ void UNpcifyCharacterComponent::PrepareAndPlayStaging(const Npcify::FStagingResu
 void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& FollowUpMessage)
 {
     Runtime->SetThinking(true);
+    if (bLiveMotion)
+    {
+        // A request before the first tick still finds the mesh of live motion.
+        BindLiveMotionMesh();
+    }
     const std::string BaseUrl = Runtime->GetOptions().BaseUrl;
     const std::string Token = Runtime->GetOptions().ResolvedToken();
     TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
     Body->SetStringField(TEXT("avatarId"), CharacterId);
+    if (WantsLiveMotion())
+    {
+        // This client plays live motion frames (docs/realtime-motion.md).
+        Body->SetArrayField(TEXT("capabilities"), {MakeShared<FJsonValueString>(UTF8_TO_TCHAR(Npcify::FNpcifyMotionFrames::Capability))});
+    }
 
     TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
     HttpRequest->SetURL(UTF8_TO_TCHAR((BaseUrl + "/conversations").c_str()));
@@ -136,14 +146,15 @@ void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& Fol
                     Npcify::FNpcifySchemaMapper::DecodeConversation(Bytes);
                 Self->Runtime->SetConversationId(Created.ConversationId);
                 Self->Runtime->SetActiveStagingId(Created.OpeningStaging.StagingId);
+                const FString CreatedId = UTF8_TO_TCHAR(Created.ConversationId.c_str());
+                if (Self->WantsLiveMotion())
+                {
+                    // Join the stream early, so that the first turn does not wait for it.
+                    Self->JoinLiveMotionStream(CreatedId, nullptr);
+                }
                 if (!FollowUpMessage.IsEmpty())
                 {
-                    Self->SendCreateStagingRequest(
-                        UTF8_TO_TCHAR(Created.ConversationId.c_str()),
-                        FollowUpMessage,
-                        MakeUuidV4(),
-                        0
-                    );
+                    Self->SendTurnRequest(CreatedId, FollowUpMessage);
                 }
                 else Self->PrepareAndPlayStaging(Created.OpeningStaging);
             }
@@ -157,11 +168,33 @@ void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& Fol
     HttpRequest->ProcessRequest();
 }
 
+void UNpcifyCharacterComponent::SendTurnRequest(const FString& ConversationIdStr, const FString& Message)
+{
+    if (!WantsLiveMotion())
+    {
+        SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, false);
+        return;
+    }
+    // Live motion frames arrive on the conversation stream while the server makes the turn:
+    // declare them only when the stream has joined the conversation.
+    Runtime->SetThinking(true);
+    TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
+    const int32 Generation = ConversationGeneration;
+    JoinLiveMotionStream(ConversationIdStr, [WeakThis, ConversationIdStr, Message, Generation](bool bJoined)
+    {
+        if (WeakThis.IsValid() && WeakThis->ConversationGeneration == Generation)
+        {
+            WeakThis->SendCreateStagingRequest(ConversationIdStr, Message, MakeUuidV4(), 0, bJoined);
+        }
+    });
+}
+
 void UNpcifyCharacterComponent::SendCreateStagingRequest(
     const FString& ConversationIdStr,
     const FString& Message,
     const FString& IdempotencyKey,
-    int32 Attempt
+    int32 Attempt,
+    bool bWithLiveMotion
 )
 {
     // Retries reuse the key, so the server runs the turn once.
@@ -177,6 +210,13 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     const FString ParentStagingId = UTF8_TO_TCHAR(Runtime->GetActiveStagingId().c_str());
     if (ParentStagingId.IsEmpty()) Body->SetField(TEXT("parentStagingId"), MakeShared<FJsonValueNull>());
     else Body->SetStringField(TEXT("parentStagingId"), ParentStagingId);
+    // Always send the list: without it the server uses the capabilities of the conversation.
+    TArray<TSharedPtr<FJsonValue>> Capabilities;
+    if (bWithLiveMotion)
+    {
+        Capabilities.Add(MakeShared<FJsonValueString>(UTF8_TO_TCHAR(Npcify::FNpcifyMotionFrames::Capability)));
+    }
+    Body->SetArrayField(TEXT("capabilities"), Capabilities);
 
     const FString Url = FString::Printf(
         TEXT("%s/conversations/%s/stagings"),
@@ -201,7 +241,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     TWeakObjectPtr<UNpcifyCharacterComponent> WeakThis(this);
     const int32 Generation = ConversationGeneration;
     HttpRequest->OnProcessRequestComplete().BindLambda(
-        [WeakThis, ConversationIdStr, Message, Key, Attempt, Generation](
+        [WeakThis, ConversationIdStr, Message, Key, Attempt, Generation, bWithLiveMotion](
             FHttpRequestPtr,
             FHttpResponsePtr Response,
             bool bConnectedSuccessfully
@@ -213,7 +253,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
             const bool bTransient = !bConnectedSuccessfully || Code == 409 || Code == 502 || Code == 503 || Code == 504;
             if (bTransient && Attempt < 2)
             {
-                Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1);
+                Self->SendCreateStagingRequest(ConversationIdStr, Message, Key, Attempt + 1, bWithLiveMotion);
                 return;
             }
             if (!bConnectedSuccessfully || !Response.IsValid() || !EHttpResponseCodes::IsOk(Code))

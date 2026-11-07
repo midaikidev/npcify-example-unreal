@@ -132,6 +132,14 @@ void ANpcifyNpc::Reply(const FString& Message)
 	Npcify->Speak(Message);
 }
 
+void ANpcifyNpc::PrepareLiveMotion()
+{
+	if (bReady && Mode == ENpcifyConnectionMode::OnlineApi)
+	{
+		Npcify->PrepareLiveMotion();
+	}
+}
+
 void ANpcifyNpc::EndConversation()
 {
 	Npcify->StopSpeaking();

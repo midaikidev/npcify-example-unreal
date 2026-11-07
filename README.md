@@ -70,7 +70,7 @@ Esc stops Play In Editor, so use **Q** in the editor.
 | Editor import of the characters | `Source/NpcifyExampleEditor/Private/NpcifyImportCharactersCommandlet.cpp` |
 
 `UNpcifyCharacterComponent` from the Npcify Unreal SDK (`Plugins/NpcifySdk`,
-version 0.2.1) does the character work: it plays each staging (speech audio,
+version 0.5.0) does the character work: it plays each staging (speech audio,
 lip-sync visemes, expressions, animation cues, typewriter text) and sets the
 morph targets of the VRM model.
 
@@ -78,6 +78,13 @@ morph targets of the VRM model.
   (staged with the packaged game) and plays every reply from memory.
 - **Online NPC.** `CreateConversation()` and `Speak()` request each reply from
   the API. The component downloads the speech audio before the line starts.
+- **Live motion.** When the owner of the online character turns **Live
+  motion** on, the server generates the body motion of each reply and the
+  component plays it over the baked idle animation with FK, on the VRM bones
+  that VRM4U stored with the imported mesh. The game calls
+  `PrepareLiveMotion()` when the player opens the conversation with the talk
+  key and when the reply box gets focus, so that the first reply does not wait
+  for the GPU. A character without live motion plays its animation clips.
 
 ### Characters and animations
 
@@ -162,6 +169,12 @@ and quits:
 "/Users/Shared/Epic Games/UE_5.8/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" \
   "$PWD/NpcifyExample.uproject" -game -windowed -ResX=1600 -ResY=900 -NpcifyAutotest=/tmp/npcify-shots -log
 ```
+
+`-NpcifyAutotestReply="Please wave at me."` types that reply to the online
+NPC in place of the first choice. For a character with live motion on, the
+log reports the live frames of the reply (when they arrived, how many played,
+the first frame's time on the staging clock, how high each hand went), and
+the test fails when no frame played.
 
 ## Licenses
 

@@ -6,14 +6,51 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundWaveProcedural.h"
+#include "InputCoreTypes.h"
 #include "Core/NpcifyCharacterRuntime.h"
+#include "Core/NpcifySpeechInput.h"
 #include "NpcifyCharacterComponent.generated.h"
+
+/** How the player can reply (docs/voice-input.md). */
+UENUM(BlueprintType)
+enum class ENpcifyInputMode : uint8
+{
+    Options,
+    Text,
+    Voice,
+};
+
+/** How live motion uses the generated root (docs/realtime-motion.md). */
+UENUM(BlueprintType)
+enum class ENpcifyLiveMotionRootMode : uint8
+{
+    /** The turn starts over the character's rest position: it stays where the game placed it. */
+    Anchored,
+    /** The generated hips position, also its horizontal movement. */
+    World,
+};
+
+UENUM(BlueprintType)
+enum class ENpcifyListeningState : uint8
+{
+    Idle,
+    Starting,
+    Listening,
+    Recognizing,
+};
+
+struct FNpcifyVoiceCapture;
+struct FNpcifyLiveMotionBinding;
+class FNpcifyConversationSocket;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifySpeechEventSignature, const FString&, StagingId, const FString&, Text);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifyCharacterRevealSignature, const FString&, RevealedText, const FString&, Character);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifyAnimationRequestSignature, const FString&, AnimationId, bool, bLoop);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyErrorSignature, const FString&, ErrorMessage);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNpcifyConversationEndedSignature);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyListeningStateSignature, ENpcifyListeningState, State);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifyTranscriptSignature, const FString&, Text, bool, bSent);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FNpcifyLiveMotionFramesSignature, const FString&, StagingId, int32, StartFrame, int32, FrameCount);
 
 UCLASS(ClassGroup=(Npcify), meta=(BlueprintSpawnableComponent, DisplayName="Npcify Character"))
 class NPCIFYSDK_API UNpcifyCharacterComponent : public UActorComponent
@@ -84,6 +121,119 @@ public:
     /** Raised when the player picks a reply option that ends a baked conversation. */
     UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
     FNpcifyConversationEndedSignature OnConversationEnded;
+
+    /**
+     * How the player can reply: Options, Text and Voice; one mode forces it. Empty: every mode
+     * that the character permits. A baked conversation permits only Options, and a character
+     * without custom replies permits only Options (docs/voice-input.md).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Voice Input")
+    TArray<ENpcifyInputMode> InputModes;
+
+    /** Hold this key to talk. None: call BeginPushToTalk and EndPushToTalk from your own input. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Voice Input")
+    FKey PushToTalkKey;
+
+    /** A BCP 47 language hint, for example ja, zh or en. Empty: the server detects the language. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Voice Input")
+    FString SpeechLanguage;
+
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifyListeningStateSignature OnListeningStateChanged;
+
+    /** The recognised text of the player's speech; bSent is true when it became the player's message. */
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifyTranscriptSignature OnTranscript;
+
+    /**
+     * Starts recording the default microphone. Listening ends with StopListening, after
+     * MaxDurationSeconds (30 at most), or after EndOnSilenceSeconds of silence that follows
+     * speech (0: off). At the end the recording is recognised and, with bSend, its text is sent
+     * as the player's message. Needs an active live conversation.
+     */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Voice Input")
+    bool StartListening(float MaxDurationSeconds = 30.0f, float EndOnSilenceSeconds = 0.0f, bool bSend = true);
+
+    /** Ends the recording and sends it for recognition. */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Voice Input")
+    void StopListening();
+
+    /** Discards the recording. Nothing is recognised or charged. */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Voice Input")
+    void CancelListening();
+
+    /** Press of a push-to-talk control: the key, a UI button or an Enhanced Input action. */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Voice Input")
+    void BeginPushToTalk();
+
+    /** Release of a push-to-talk control. A press shorter than 0.3 s sends nothing. */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Voice Input")
+    void EndPushToTalk();
+
+    /** Sends a recognised text that StartListening did not send (bSend false). Needs Voice. */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Voice Input")
+    void SendTranscript(const FString& Text);
+
+    UFUNCTION(BlueprintPure, Category="Npcify|Voice Input")
+    ENpcifyListeningState GetListeningState() const { return ListeningState; }
+
+    /** The input modes in use. */
+    UFUNCTION(BlueprintPure, Category="Npcify|Voice Input")
+    TArray<ENpcifyInputMode> GetInputModes() const;
+
+    /**
+     * Play the generated body motion of each reply when the character has Live motion on
+     * (docs/realtime-motion.md). Off: the character keeps its prepared animation clips.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Live Motion")
+    bool bLiveMotion = true;
+
+    /** Anchored keeps the character where the game placed it; World applies the generated hips movement. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Live Motion")
+    ENpcifyLiveMotionRootMode LiveMotionRootMode = ENpcifyLiveMotionRootMode::Anchored;
+
+    /**
+     * VRM humanoid bone (hips, leftUpperArm, ...) to skeleton bone. Empty: the SDK reads the
+     * humanoid table that VRM4U stores with the imported mesh.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Live Motion")
+    TMap<FString, FName> LiveMotionBones;
+
+    /** The mesh that plays live motion. Empty: the first skeletal mesh of the owner. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Live Motion")
+    TObjectPtr<USkeletalMeshComponent> LiveMotionMesh = nullptr;
+
+    /**
+     * Warms up live motion for the current conversation on the player's intent: call it when the
+     * player starts to type a reply or presses to talk (push-to-talk calls it itself). It runs once
+     * per conversation, does nothing without live motion, and never delays the reply.
+     */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Live Motion")
+    void PrepareLiveMotion();
+
+    /** True while turns ask for live motion: it is on, the character has it, and the mesh can play it. */
+    UFUNCTION(BlueprintPure, Category="Npcify|Live Motion")
+    bool IsLiveMotionReady() const;
+
+    /** The live motion weight now: 0 (the animation) to 1 (live frames). */
+    UFUNCTION(BlueprintPure, Category="Npcify|Live Motion")
+    float GetLiveMotionWeight() const;
+
+    /** Frames of a staging: received, played, and the staging time of the first played frame (-1: none). */
+    UFUNCTION(BlueprintPure, Category="Npcify|Live Motion")
+    bool GetLiveMotionStats(const FString& StagingId, int32& FramesReceived, int32& FramesPlayed, float& FirstFrameTime) const;
+
+    /** Live motion frames arrived for a staging: frame StartFrame plays at StartFrame / 30 s of its clock. */
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifyLiveMotionFramesSignature OnLiveMotionFrames;
+
+    /** The staging that plays or played last. */
+    UFUNCTION(BlueprintPure, Category="Npcify|Conversation")
+    FString GetActiveStagingId() const;
+
+    /** The skeleton bone of a VRM humanoid bone (hips, rightHand, ...) of the live motion mesh, or None. */
+    UFUNCTION(BlueprintPure, Category="Npcify|Live Motion")
+    FName GetHumanoidBoneName(const FString& VrmBone) const;
 
     UFUNCTION(BlueprintCallable, Category="Npcify|Character")
     void Configure(const FString& InBaseUrl, const FString& InCharacterId, const FString& InApiKey);
@@ -217,12 +367,37 @@ private:
     /** Downloads audio that the staging references by URL, then plays the staging. */
     void PrepareAndPlayStaging(const Npcify::FStagingResultPayload& Staging);
     void SendCreateConversationRequest(const FString& FollowUpMessage);
+    /** Requests a turn; with live motion it joins the conversation stream first. */
+    void SendTurnRequest(const FString& ConversationIdStr, const FString& Message);
     void SendCreateStagingRequest(
         const FString& ConversationIdStr,
         const FString& Message,
         const FString& IdempotencyKey,
-        int32 Attempt
+        int32 Attempt,
+        bool bWithLiveMotion
     );
+    /** Live motion: NpcifyCharacterComponentLiveMotion.cpp. */
+    bool WantsLiveMotion() const;
+    void JoinLiveMotionStream(const FString& ConversationIdStr, TFunction<void(bool)> OnDone);
+    void HandleLiveMotionEvent(const Npcify::FNpcifyMsgPackValue& Event);
+    void DownloadMotionTrack(const std::string& StagingId, const Npcify::FStagingMotionTrack& Track);
+    void UpdateLiveMotion(float DeltaTime);
+    void BindLiveMotionMesh();
+    void UnbindLiveMotionMesh();
+    UFUNCTION()
+    void HandleBoneTransformsFinalized();
+    /** Sends a reply after the input-mode checks of Speak, Reply or SendTranscript. */
+    void SendReply(const FString& Message);
+    /** Voice input: NpcifyCharacterComponentVoice.cpp. */
+    static std::vector<Npcify::EInputMode> ToCoreInputModes(const TArray<ENpcifyInputMode>& Modes);
+    std::vector<Npcify::EInputMode> CurrentInputModes() const;
+    bool RequireInputMode(Npcify::EInputMode Mode, const TCHAR* Reason);
+    void CheckInputModesWithCharacter(TFunction<void()> OnPermitted);
+    void TickVoiceInput();
+    void SetListeningState(ENpcifyListeningState State);
+    void CloseMicrophone();
+    void FinishListening();
+    void SendSpeechRequest(TArray<uint8> Wav, bool bSend);
 
     UPROPERTY(Transient)
     TArray<USkeletalMeshComponent*> SkeletalMeshes;
@@ -240,8 +415,27 @@ private:
     USoundWaveProcedural* ProceduralSoundWave = nullptr;
 
     TUniquePtr<Npcify::FNpcifyCharacterRuntime> Runtime;
+    TSharedPtr<FNpcifyVoiceCapture> VoiceCapture;
+    ENpcifyListeningState ListeningState = ENpcifyListeningState::Idle;
+    double ListeningStartedAt = 0.0;
+    float ListeningMaxSeconds = 30.0f;
+    bool bSendTranscript = true;
+    bool bPushToTalkActive = false;
+    double PushToTalkPressedAt = 0.0;
+    /** InputModes after the check with the character's settings. */
+    bool bInputModesChecked = false;
+    std::vector<Npcify::EInputMode> CheckedInputModes;
+    /** The owner's voice input (speechInputEnabled), after the character's info was read. */
+    bool bSpeechInputKnown = false;
+    bool bSpeechInputEnabled = false;
     bool bHasLookAtLocation = false;
     /** Increments on reset, so that late HTTP responses of an old conversation are ignored. */
     int32 ConversationGeneration = 0;
+    TSharedPtr<FNpcifyConversationSocket> LiveMotionSocket;
+    TSharedPtr<FNpcifyLiveMotionBinding> LiveMotionBinding;
+    FString LiveMotionPreparedConversation;
+    /** The character's live motion switch from its info, once read. */
+    bool bLiveMotionInfoKnown = false;
+    bool bLiveMotionInEffect = false;
     FVector LookAtWorldLocation = FVector::ZeroVector;
 };

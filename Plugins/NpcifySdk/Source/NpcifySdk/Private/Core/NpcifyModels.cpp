@@ -1,5 +1,7 @@
 #include "Core/NpcifyModels.h"
 
+#include "Core/NpcifyLiveMotion.h"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -233,6 +235,29 @@ namespace Npcify
                     Out.Animations.push_back(std::move(Clip));
                 }
             }
+        }
+
+        const FNpcifyMsgPackValue* MotionArr = MapVal.FindField("motions");
+        if (MotionArr && MotionArr->IsArray())
+        {
+            for (const auto& Item : MotionArr->ArrayValue)
+            {
+                const FNpcifyMsgPackValue* Prompt = Item.IsMap() ? Item.FindField("prompt") : nullptr;
+                if (Prompt && Prompt->IsString())
+                {
+                    FStagingMotionPrompt Motion;
+                    Motion.StartTime = GetDoubleField(Item, "startTime", 0.0);
+                    Motion.EndTime = GetDoubleField(Item, "endTime", 0.0);
+                    Motion.Prompt = Prompt->StringValue;
+                    Out.Motions.push_back(std::move(Motion));
+                }
+            }
+        }
+
+        const FNpcifyMsgPackValue* Track = MapVal.FindField("motion");
+        if (Track)
+        {
+            FNpcifyMotionFrames::TryParseTrack(*Track, Out.Motion);
         }
 
         return Out;

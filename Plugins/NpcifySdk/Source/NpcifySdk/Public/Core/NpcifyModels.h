@@ -87,12 +87,37 @@ namespace Npcify
         bool bLoop = false;
     };
 
+    /** The motion prompt of a span of a live motion staging (timeline.motions, NPCP 1.1). */
+    struct FStagingMotionPrompt
+    {
+        double StartTime = 0.0;
+        double EndTime = 0.0;
+        std::string Prompt;
+    };
+
+    /**
+     * The stored live motion frames of a completed staging (timeline.motion, NPCP 1.1): the same
+     * float32 bytes as the motion_frames events, at FramesUrl or in FramesData.
+     */
+    struct FStagingMotionTrack
+    {
+        bool bValid = false;
+        double Fps = 30.0;
+        int FrameCount = 0;
+        std::vector<std::string> Bones;
+        double RestHipsHeight = 1.0;
+        std::string FramesUrl;
+        std::vector<uint8_t> FramesData;
+    };
+
     struct FStagingTimeline
     {
         double Duration = 0.0;
         std::vector<FStagingDialogueBlock> Dialogue;
         std::vector<FStagingExpressionClip> Expressions;
         std::vector<FStagingAnimationClip> Animations;
+        std::vector<FStagingMotionPrompt> Motions;
+        FStagingMotionTrack Motion;
     };
 
     struct FStagingReplyOption

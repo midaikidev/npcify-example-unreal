@@ -2,6 +2,7 @@
 
 #include "Core/NpcifyBakedConversation.h"
 #include "Core/NpcifyFacialMixer.h"
+#include "Core/NpcifyLiveMotion.h"
 #include "Core/NpcifyModels.h"
 
 #include <cstdint>
@@ -81,8 +82,16 @@ namespace Npcify
         std::function<void(const std::string&, const FStagingCharacterCue&)> OnCharacterRevealed;
         std::function<void(const std::string&, bool)> OnAnimationPlayRequested;
         std::function<void(const std::string&)> OnError;
+        /**
+         * A staging to play has stored live motion frames at a URL (timeline.motion, a replay):
+         * the engine downloads them and calls GetLiveMotion().Load. Until then the staging plays idle.
+         */
+        std::function<void(const std::string& StagingId, const FStagingMotionTrack& Track)> OnMotionTrackRequested;
 
         const FNpcifyOptions& GetOptions() const { return Options; }
+        /** The live motion frames of the stagings and the pose of the staging clock (docs/realtime-motion.md). */
+        FNpcifyLiveMotionPlayer& GetLiveMotion() { return LiveMotion; }
+        const FNpcifyLiveMotionPlayer& GetLiveMotion() const { return LiveMotion; }
         FNpcifyFacialMixer& GetExpressions() { return Expressions; }
         const FNpcifyFacialMixer& GetExpressions() const { return Expressions; }
         FNpcifyVisemePlayer& GetVisemePlayer() { return VisemePlayer; }
@@ -149,6 +158,7 @@ namespace Npcify
         FNpcifyFacialMixer Expressions;
         FNpcifyVisemePlayer VisemePlayer;
         FNpcifyStagingPlayer StagingPlayer;
+        FNpcifyLiveMotionPlayer LiveMotion;
         std::unique_ptr<FNpcifyBakedConversation> BakedConversation;
 
         std::string ConversationId;

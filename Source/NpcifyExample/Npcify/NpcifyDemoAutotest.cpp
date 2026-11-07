@@ -61,6 +61,34 @@ void ANpcifyDemoAutotest::Capture(const FString& Name)
 	UE_LOG(LogTemp, Display, TEXT("Npcify autotest: screenshot %s"), *Path);
 }
 
+void ANpcifyDemoAutotest::LogLiveMotion(const FString& Tag, ANpcifyNpc* Npc)
+{
+	UNpcifyCharacterComponent* Npcify = Npc->Npcify;
+	int32 Received = 0;
+	int32 Played = 0;
+	float FirstFrame = -1.f;
+	if (!Npcify->GetLiveMotionStats(Npcify->GetActiveStagingId(), Received, Played, FirstFrame) || Played == 0)
+	{
+		UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s live motion: no frames played (ready %d)"), *Tag, Npcify->IsLiveMotionReady());
+		if (Npcify->IsLiveMotionReady())
+		{
+			++Failures;
+		}
+		return;
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("Npcify autotest: %s live motion: %d frames played, %d frames received, first frame at %.2f s of the staging clock, max weight %.2f, hands at most %.1f cm (right) and %.1f cm (left) above their shoulders"),
+		*Tag, Played, Received, FirstFrame, MaxLiveWeight, MaxHandAboveShoulder, MaxLeftHandAboveShoulder);
+}
+
+void ANpcifyDemoAutotest::HandleLiveMotionFrames(const FString& StagingId, int32 StartFrame, int32 FrameCount)
+{
+	const bool bSpeaking = FramesNpc && FramesNpc->Npcify->IsSpeaking();
+	UE_LOG(LogTemp, Display, TEXT("Npcify autotest: live frames %d+%d at %.2f s after the reply was sent%s"),
+		StartFrame, FrameCount, FPlatformTime::Seconds() - ReplySentAt,
+		bSpeaking ? TEXT(", during playback") : TEXT(", before playback"));
+}
+
 void ANpcifyDemoAutotest::MovePlayerNear(ANpcifyNpc* Npc)
 {
 	APawn* Player = UGameplayStatics::GetPlayerPawn(this, 0);
@@ -85,6 +113,21 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 	if (const ANpcifyNpc* Talking = Dialogue->GetActiveNpc())
 	{
 		MaxMouthOpenness = FMath::Max(MaxMouthOpenness, Talking->Npcify->GetMouthOpenness());
+		MaxLiveWeight = FMath::Max(MaxLiveWeight, Talking->Npcify->GetLiveMotionWeight());
+		const FName Hand = Talking->Npcify->GetHumanoidBoneName(TEXT("rightHand"));
+		const FName Shoulder = Talking->Npcify->GetHumanoidBoneName(TEXT("rightUpperArm"));
+		if (!Hand.IsNone() && !Shoulder.IsNone())
+		{
+			MaxHandAboveShoulder = FMath::Max(MaxHandAboveShoulder,
+				static_cast<float>(Talking->Mesh->GetBoneLocation(Hand).Z - Talking->Mesh->GetBoneLocation(Shoulder).Z));
+		}
+		const FName LeftHand = Talking->Npcify->GetHumanoidBoneName(TEXT("leftHand"));
+		const FName LeftShoulder = Talking->Npcify->GetHumanoidBoneName(TEXT("leftUpperArm"));
+		if (!LeftHand.IsNone() && !LeftShoulder.IsNone())
+		{
+			MaxLeftHandAboveShoulder = FMath::Max(MaxLeftHandAboveShoulder,
+				static_cast<float>(Talking->Mesh->GetBoneLocation(LeftHand).Z - Talking->Mesh->GetBoneLocation(LeftShoulder).Z));
+		}
 	}
 
 	if (!bPlanned)
@@ -148,7 +191,33 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 					*FString::Join(Dialogue->GetChoices(), TEXT(" | ")), MaxMouthOpenness);
 				MaxMouthOpenness = 0.f;
 			});
-			Step(Tag + TEXT(" choose"), 0.5f, nullptr, [Dialogue]() { Dialogue->Choose(0); });
+			Step(Tag + TEXT(" choose"), 0.5f, nullptr, [this, Dialogue, Npc, Tag]()
+			{
+				MaxLiveWeight = 0.f;
+				MaxHandAboveShoulder = -1000.f;
+				MaxLeftHandAboveShoulder = -1000.f;
+				ReplySentAt = FPlatformTime::Seconds();
+				FramesNpc = Npc;
+				Npc->Npcify->OnLiveMotionFrames.AddUniqueDynamic(this, &ANpcifyDemoAutotest::HandleLiveMotionFrames);
+				if (!CustomReply.IsEmpty() && Npc->AllowsCustomReply())
+				{
+					UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s reply: %s"), *Tag, *CustomReply);
+					Dialogue->SendCustomReply(CustomReply);
+				}
+				else
+				{
+					Dialogue->Choose(0);
+				}
+			});
+			if (Npc->Mode == ENpcifyConnectionMode::OnlineApi)
+			{
+				// A picture during the reply, when live motion moves the character.
+				Step(Tag + TEXT(" reply speaking"), 0.5f, [Npc]() { return Npc->Npcify->IsSpeaking(); }, [this, Tag]()
+				{
+					UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s reply plays %.2f s after it was sent"), *Tag, FPlatformTime::Seconds() - ReplySentAt);
+				});
+				Step(Tag + TEXT(" reply motion"), 2.5f, nullptr, [this, Tag, Shot]() { Capture(FString::Printf(TEXT("%02d-%s-reply-motion"), Shot + 3, *Tag)); });
+			}
 			// Panning check (offline NPC: its reply starts at once): during the reply, the listener
 			// turns so that the NPC is on its right. The right channel must be louder.
 			if (Npc->Mode == ENpcifyConnectionMode::OfflineBaked)
@@ -171,15 +240,20 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 			}
 			Step(Tag + TEXT(" reply"), 1.f, [Dialogue]() { return Dialogue->IsChoosing(); }, [this, Tag, Shot, Dialogue]()
 			{
-				Capture(FString::Printf(TEXT("%02d-%s-reply"), Shot + 3, *Tag));
+				Capture(FString::Printf(TEXT("%02d-%s-reply"), Shot + 4, *Tag));
 				UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s reply choices: %s"), *Tag, *FString::Join(Dialogue->GetChoices(), TEXT(" | ")));
+				if (ANpcifyNpc* Talking = Dialogue->GetActiveNpc())
+				{
+					Talking->Npcify->OnLiveMotionFrames.RemoveDynamic(this, &ANpcifyDemoAutotest::HandleLiveMotionFrames);
+					LogLiveMotion(Tag, Talking);
+				}
 				if (Dialogue->GetChoices().Contains(TEXT("Try again")))
 				{
 					++Failures;
 				}
 			});
 			Step(Tag + TEXT(" close"), 1.f, nullptr, [Dialogue]() { Dialogue->Close(); });
-			Shot += 4;
+			Shot += 5;
 		}
 		Step(TEXT("finish"), 1.5f, nullptr, [this]()
 		{

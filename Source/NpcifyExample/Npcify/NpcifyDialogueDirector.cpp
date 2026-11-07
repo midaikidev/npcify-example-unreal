@@ -158,7 +158,14 @@ void ANpcifyDialogueDirector::UpdateConversation(float DeltaSeconds)
 		Close();
 		return;
 	}
-	if (Widget->IsReplyFocused())
+	const bool bReplyFocused = Widget->IsReplyFocused();
+	if (bReplyFocused && !bReplyWasFocused)
+	{
+		// The player starts to type a reply.
+		Active->PrepareLiveMotion();
+	}
+	bReplyWasFocused = bReplyFocused;
+	if (bReplyFocused)
 	{
 		return;
 	}
@@ -268,6 +275,14 @@ void ANpcifyDialogueDirector::Choose(int32 Index)
 	SendReply(Label);
 }
 
+void ANpcifyDialogueDirector::SendCustomReply(const FString& Message)
+{
+	if (!Message.TrimStartAndEnd().IsEmpty())
+	{
+		SendReply(Message.TrimStartAndEnd());
+	}
+}
+
 void ANpcifyDialogueDirector::SendReply(const FString& Message)
 {
 	if (!Active || (Phase != EPhase::Choosing && !Active->AllowsCustomReply()))
@@ -318,6 +333,12 @@ void ANpcifyDialogueDirector::ShowError(const FString& Message)
 
 void ANpcifyDialogueDirector::HandleSpeechStart(const FString& StagingId, const FString& Text)
 {
+	if (Active)
+	{
+		// The player pressed the talk key and the conversation exists now: warm up live motion
+		// before the first reply.
+		Active->PrepareLiveMotion();
+	}
 	LastSpokenText = Text;
 	Phase = EPhase::Speaking;
 	Widget->SetHint(NSLOCTEXT("Npcify", "HintSpeaking", "Space  Skip    Q  Leave"));
