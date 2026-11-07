@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "NpcifyDemoClockProbe.h"
 #include "NpcifyDemoAutotest.generated.h"
 
 class ANpcifyDialogueDirector;
@@ -55,6 +56,9 @@ private:
 	float MaxHandAboveShoulder = -1000.f;
 	float MaxLeftHandAboveShoulder = -1000.f;
 	double ReplySentAt = 0.0;
+	/** The online reply: the lag of its staging clock behind its voice. */
+	TUniquePtr<FNpcifyDemoClockProbe> ClockProbe;
+	FString ClockProbeTag;
 
 	UPROPERTY(Transient)
 	TObjectPtr<ANpcifyNpc> FramesNpc;

@@ -128,6 +128,13 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 			MaxLeftHandAboveShoulder = FMath::Max(MaxLeftHandAboveShoulder,
 				static_cast<float>(Talking->Mesh->GetBoneLocation(LeftHand).Z - Talking->Mesh->GetBoneLocation(LeftShoulder).Z));
 		}
+		if (ClockProbe.IsValid() && Talking == FramesNpc)
+		{
+			ClockProbe->Sample(Talking->Npcify->GetRuntime(), [this](const FString& Note)
+			{
+				UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s %s"), *ClockProbeTag, *Note);
+			});
+		}
 	}
 
 	if (!bPlanned)
@@ -198,6 +205,11 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 				MaxLeftHandAboveShoulder = -1000.f;
 				ReplySentAt = FPlatformTime::Seconds();
 				FramesNpc = Npc;
+				if (Npc->Mode == ENpcifyConnectionMode::OnlineApi)
+				{
+					ClockProbe = MakeUnique<FNpcifyDemoClockProbe>();
+					ClockProbeTag = Tag;
+				}
 				Npc->Npcify->OnLiveMotionFrames.AddUniqueDynamic(this, &ANpcifyDemoAutotest::HandleLiveMotionFrames);
 				if (!CustomReply.IsEmpty() && Npc->AllowsCustomReply())
 				{
@@ -240,6 +252,14 @@ void ANpcifyDemoAutotest::Tick(float DeltaSeconds)
 			}
 			Step(Tag + TEXT(" reply"), 1.f, [Dialogue]() { return Dialogue->IsChoosing(); }, [this, Tag, Shot, Dialogue]()
 			{
+				if (ClockProbe.IsValid())
+				{
+					ClockProbe->Finish([this](const FString& Note)
+					{
+						UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s %s"), *ClockProbeTag, *Note);
+					});
+					ClockProbe.Reset();
+				}
 				Capture(FString::Printf(TEXT("%02d-%s-reply"), Shot + 4, *Tag));
 				UE_LOG(LogTemp, Display, TEXT("Npcify autotest: %s reply choices: %s"), *Tag, *FString::Join(Dialogue->GetChoices(), TEXT(" | ")));
 				if (ANpcifyNpc* Talking = Dialogue->GetActiveNpc())
