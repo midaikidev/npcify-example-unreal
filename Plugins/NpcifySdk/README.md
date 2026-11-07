@@ -201,10 +201,11 @@ prepared animation clips (`OnAnimationRequested`).
   join for 3 s at most.
   After that time, or at once while the stream fails, the turn plays the
   prepared clips and the stream connects again in the background, with a wait
-  of at most 10 s between attempts while the component lives. A conversation
-  that the server refuses (for example after you rotate the API key) looks
-  like a lost connection: the server closes the connection before its refusal
-  arrives, so the turns keep the prepared clips.
+  of at most 10 s between attempts while the component lives. When the server
+  refuses the conversation (for example after you rotate the API key), the
+  stream stops its attempts for that conversation, and the turns keep the
+  prepared clips until the next conversation (`ResetConversation` or another
+  conversation ID).
 
 ## Spatial Voice
 
