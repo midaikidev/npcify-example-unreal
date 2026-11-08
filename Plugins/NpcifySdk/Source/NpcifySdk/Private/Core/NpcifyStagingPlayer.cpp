@@ -226,26 +226,33 @@ namespace Npcify
 
     int FNpcifyStagingPlayer::FindBlockToPlay() const
     {
-        if (GetCurrentBlock() && CurrentTimeSeconds <= ActiveEnd())
-        {
-            return ActiveBlockIndex;
-        }
         // The earliest block that can play, did not start and whose time came; also when the clock
         // passed its end: it then plays from its own start. The end of a block can move back when
         // its final version comes, and a block never starts again.
         const std::vector<FStagingDialogueBlock>& Dialogue = ActiveStaging->Timeline.Dialogue;
         const size_t Playable = bStreamed ? std::min(ReadyBlocks, Dialogue.size()) : Dialogue.size();
-        int Found = -1;
+        int Due = -1;
         for (size_t Index = 0; Index < Playable; ++Index)
         {
             const FStagingDialogueBlock& Block = Dialogue[Index];
             if (!HasStarted(Index) && Block.StartTime <= CurrentTimeSeconds &&
-                (Found < 0 || Block.StartTime < Dialogue[static_cast<size_t>(Found)].StartTime))
+                (Due < 0 || Block.StartTime < Dialogue[static_cast<size_t>(Due)].StartTime))
             {
-                Found = static_cast<int>(Index);
+                Due = static_cast<int>(Index);
             }
         }
-        return Found;
+        // The block that plays stays until its end. At its end a block that is due starts: after a
+        // block that started late, the clock limit is its end, and the next block must not wait for
+        // a later one.
+        if (GetCurrentBlock())
+        {
+            const double End = ActiveEnd();
+            if (CurrentTimeSeconds < End || (CurrentTimeSeconds == End && Due < 0))
+            {
+                return ActiveBlockIndex;
+            }
+        }
+        return Due;
     }
 
     void FNpcifyStagingPlayer::Stop()

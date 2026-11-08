@@ -43,6 +43,8 @@ namespace Npcify
          * conversations:join, or an empty string when the event names none.
          */
         static std::string ReadCauseConversationId(const std::string& Json);
+        /** A conversation ID without the white space around it, as the server reads it. */
+        static std::string TrimId(const std::string& Id);
         static std::string JsonString(const std::string& Value);
         /** The Socket.IO URL of an API base URL (its origin; the path is not used). */
         static std::string BuildUrl(const std::string& BaseUrl);

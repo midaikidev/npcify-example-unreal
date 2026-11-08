@@ -230,6 +230,13 @@ namespace Npcify
         return Index != std::string::npos && Json.compare(Index, 4, "true") == 0;
     }
 
+    std::string FNpcifySocketIo::TrimId(const std::string& Id)
+    {
+        const char* const Space = " \t\n\v\f\r";
+        const size_t First = Id.find_first_not_of(Space);
+        return First == std::string::npos ? std::string() : Id.substr(First, Id.find_last_not_of(Space) - First + 1);
+    }
+
     std::string FNpcifySocketIo::ReadCauseConversationId(const std::string& Json)
     {
         const size_t Cause = FindValue(Json, "cause");
@@ -294,17 +301,19 @@ namespace Npcify
 
     bool FNpcifyConversationSession::IsJoined(const std::string& InConversationId) const
     {
-        return bConnected && !InConversationId.empty() && JoinedConversationId == InConversationId;
+        const std::string Id = FNpcifySocketIo::TrimId(InConversationId);
+        return bConnected && !Id.empty() && JoinedConversationId == Id;
     }
 
     void FNpcifyConversationSession::Join(const std::string& InConversationId)
     {
-        ConversationId = InConversationId;
-        if (bConnected && JoinedConversationId == InConversationId)
+        // The server trims the ID and names that one in a refusal: send and compare that one.
+        ConversationId = FNpcifySocketIo::TrimId(InConversationId);
+        if (bConnected && JoinedConversationId == ConversationId)
         {
             if (OnJoinResult)
             {
-                OnJoinResult(InConversationId, true);
+                OnJoinResult(ConversationId, true);
             }
             return;
         }

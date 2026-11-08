@@ -29,8 +29,10 @@ FNpcifyConversationSocket::~FNpcifyConversationSocket()
     Shutdown(false);
 }
 
-void FNpcifyConversationSocket::Join(const FString& ConversationId, TFunction<void(bool)> OnDone)
+void FNpcifyConversationSocket::Join(const FString& InConversationId, TFunction<void(bool)> OnDone)
 {
+    // The server trims the ID and names that one in a refusal: send and compare that one.
+    const FString ConversationId = InConversationId.TrimStartAndEnd();
     if (IsRefused(ConversationId))
     {
         // The server refused this conversation with this key; a retry fails the same way.
@@ -65,16 +67,18 @@ void FNpcifyConversationSocket::Join(const FString& ConversationId, TFunction<vo
 bool FNpcifyConversationSocket::IsJoined(const FString& ConversationId) const
 {
     return Socket.IsValid() && Session.IsValid() && Socket->IsConnected() &&
-        Session->IsJoined(TCHAR_TO_UTF8(*ConversationId));
+        Session->IsJoined(TCHAR_TO_UTF8(*ConversationId.TrimStartAndEnd()));
 }
 
-bool FNpcifyConversationSocket::IsFailing(const FString& ConversationId) const
+bool FNpcifyConversationSocket::IsFailing(const FString& InConversationId) const
 {
+    const FString ConversationId = InConversationId.TrimStartAndEnd();
     return !ConversationId.IsEmpty() && FailedConversationId == ConversationId && !IsJoined(ConversationId);
 }
 
-bool FNpcifyConversationSocket::IsRefused(const FString& ConversationId) const
+bool FNpcifyConversationSocket::IsRefused(const FString& InConversationId) const
 {
+    const FString ConversationId = InConversationId.TrimStartAndEnd();
     return !ConversationId.IsEmpty() && RefusedConversationId == ConversationId;
 }
 
