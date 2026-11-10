@@ -11,6 +11,8 @@
 
 namespace Npcify
 {
+    struct FSightFrameRequest;
+
     /** One Engine.IO v4 text packet, with its Socket.IO v5 packet when it is a message. */
     struct FNpcifySocketIoPacket
     {
@@ -65,6 +67,8 @@ namespace Npcify
         explicit FNpcifyConversationSession(std::string InApiToken);
 
         std::function<void(const std::string&)> SendText;
+        /** Sends one binary message: the attachment of a binary event (sight frames). */
+        std::function<void(const std::vector<uint8_t>&)> SendBinary;
         /** A stream event of the joined conversation, decoded from NPCP (kind 2). */
         std::function<void(const std::string& ConversationId, const FNpcifyMsgPackValue& Event)> OnStreamEvent;
         /** The result of Join: true when the server acknowledged it. */
@@ -78,6 +82,10 @@ namespace Npcify
          */
         std::function<void()> OnRefused;
         std::function<void(const std::string&)> OnLog;
+        /** An acknowledgement of a request of SendSightFrame: its ID and the JSON array of its arguments. */
+        std::function<void(int64_t AckId, const std::string& Json)> OnAck;
+        /** A sight_observation event: the JSON array of the event (any conversation of the socket). */
+        std::function<void(const std::string& Json)> OnSightObservation;
 
         /**
          * Returns false when the connection must close (close, disconnect, connect error, or
@@ -95,6 +103,12 @@ namespace Npcify
         void Leave();
         /** Fails a join in progress, for example after a timeout or a lost connection. */
         void FailPendingJoin();
+        /**
+         * Sends conversations:sight (NpcifySight.cpp): the header with a placeholder, then the
+         * JPEG as its attachment. Returns the acknowledgement ID, or -1 when the session is not
+         * connected or did not join the conversation of the frame.
+         */
+        int64_t SendSightFrame(const FSightFrameRequest& Request);
 
         bool IsConnected() const { return bConnected; }
         bool IsRefused() const { return bRefused; }

@@ -103,6 +103,8 @@ private:
 	UAnimSequence* FindAnimation(const FString& AnimationId) const;
 
 	bool bReady = false;
+	/** The conversation started: sight starts once the conversation exists (SDK 0.7.0). */
+	bool bSightPending = false;
 	FString StatusMessage;
 	FRotator RestRotation;
 	TWeakObjectPtr<AActor> FaceTarget;

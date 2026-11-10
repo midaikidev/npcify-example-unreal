@@ -13,11 +13,12 @@ Unreal Engine 5 C++ & Blueprint plugin (`NpcifySdk.uplugin`) for embedding Npcif
   - Voice input: push-to-talk with a key or your own input, or listening started by code. See [Voice Input](#voice-input).
   - Live motion: the generated body motion of each reply on a VRM skeleton, and `PrepareLiveMotion()`. See [Live Motion](#live-motion).
   - Streamed replies: a reply starts to play when the audio of its first block is complete, before the reply is complete. See [Streamed Replies](#streamed-replies).
+  - Sight: the character sees the game viewport, a render target or a scene capture, and its replies use what it sees. See [Sight](#sight).
   - Fine-grained control: `LookAtActor`, `LookAtComponent`, `LookAtLocation`, `ClearLookAt`, `PlayAnimation`, `SetEmotion`, `PlayExpressionCue`, `Speak`, `Reply`, `StartBakedConversation`, `GetBoneTransform`, `GetMouthOpenness`.
 
 ## Installation
 
-Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.6.1`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
+Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.7.0`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
 
 ```bash
 mkdir -p Plugins/NpcifySdk
@@ -207,6 +208,77 @@ prepared animation clips (`OnAnimationRequested`).
   prepared clips until the next conversation (`ResetConversation` or another
   conversation ID). The refusal of a conversation that you left while the
   server checked it does not stop the next conversation.
+
+## Sight
+
+When the owner of a character turns **sight** on in its Sight tab, the
+character can see: the component sends frames of the game view on the
+conversation stream, the server describes each frame with the owner's vision
+provider, and the character reads the observations of the last 60 s in its
+next reply ([sight](../../docs/sight.md)). The owner pays each frame.
+
+```cpp
+Npc->OnSight.AddDynamic(this, &AMyGame::HandleSight); // const FNpcifySightObservation&
+Npc->OnSightState.AddDynamic(this, &AMyGame::HandleSightState);
+if (Npc->GetSightState() == ENpcifySightState::Off)
+{
+    Npc->StartSight(FNpcifySightOptions()); // the game viewport
+}
+```
+
+- **State:** `GetSightState()` is `Unavailable` until the character info turns
+  sight on (the component reads it when a conversation starts), and in a baked
+  conversation; then `Off`, `Starting` or `On`. `OnSightState(State,
+  ErrorCode)` reports each change; `ErrorCode` is the code that stopped sight
+  or its start.
+- **Source:** no source in `FNpcifySightOptions`: the game viewport, with the
+  HUD (its back buffer, read in `OnBackBufferReadyToPresent`). `Texture`: a
+  render target or another texture. `SceneCapture`: the render target of a scene
+  capture, for example a capture at the character's eyes; a capture that does
+  not render every frame renders the scene at each check, four times a second
+  (use `SCS_FinalColorLDR`). These frames have the source `game`. With
+  `bCameraSource` the texture is the player's camera (source `camera`), for
+  example the `UMediaTexture` of a webcam media player of your game; the SDK
+  does not open a webcam.
+- **Colour:** a render target holds linear colour in every format (a canvas,
+  and a scene capture also with `SCS_FinalColorLDR`, write linear values into
+  `RTF_RGBA8` and `RTF_RGBA16f`), so the SDK gives its frames the gamma back.
+  A scene capture into `RTF_RGBA8_SRGB` gives dark frames: use `RTF_RGBA8` or
+  `RTF_RGBA16f`. A scene capture has no auto exposure of the main view, so its
+  frames can be darker than the viewport. Another texture (a media texture) is
+  copied as it is, unless it is an sRGB or a float texture. Set the console
+  variable `npcify.Sight.SaveFolder` to a folder to keep each frame as a JPEG
+  and see what the character sees.
+- **Frames:** the render thread scales the picture to fit inside 640 x 360,
+  and `FRHIGPUTextureReadback` copies it to the CPU without a flush of the game
+  or render thread. On an Apple GPU the SDK reads the readback from shared
+  memory after its fence (the Metal RHI of the engine waits for an idle GPU
+  when it maps a readback); an Intel Mac takes that wait at each check.
+  Worker threads make the 32 x 18 luma grid and the JPEG
+  (`IImageWrapper`, quality 70, then 50 once above 200 KiB). Every 250 ms the
+  SDK compares the grid with the last one: a mean change above
+  `MotionThreshold` (8 on 0 to 255) sends a frame when one second passed since
+  the last frame; else a frame goes every `IntervalMs` (5000, at least 1000).
+  One frame waits for its acknowledgement at a time. No frames while the
+  application is in the background or the game is paused.
+- **Codes:** `SIGHT_DISABLED`, `INSUFFICIENT_POINTS`,
+  `CONVERSATION_ACCESS_DENIED` and `SIGHT_SOURCE_ENDED` stop sight and go to
+  `OnError` (`"CODE: message"`) and `OnSightState`. After `SIGHT_DISABLED` the
+  state is `Unavailable` until the next conversation reads the character info
+  again. Other codes, a timeout (20 s) and a lost connection skip the frame;
+  after a lost connection the next frame joins the conversation again first.
+  `StartSight` returns false and reports `OnError` for `SIGHT_DISABLED`,
+  `CONVERSATION_REQUIRED` and `SIGHT_ALREADY_STARTED`; a start that fails later
+  (`SIGHT_SOURCE_UNAVAILABLE`, `CAMERA_UNAVAILABLE`, a failed join) reports
+  `OnSightState(Off, Code)` and `OnError`.
+- **Events:** `OnSight` gets the observations of the current conversation
+  (`Summary`, `People`, `Persons`, `Text`, `Model`, `CostPoints`). `StopSight`,
+  `ResetConversation` and `EndPlay` stop sight. `LogNpcifySight` notes the size
+  and the acknowledgement of each frame, and the costs of the source when sight
+  stops.
+- **Transport:** the frames go on the conversation stream as the binary
+  Socket.IO event `conversations:sight`. The plugin needs the engine modules
+  `ImageWrapper`, `RenderCore`, `RHI`, `Slate` and `SlateCore`.
 
 ## Spatial Voice
 

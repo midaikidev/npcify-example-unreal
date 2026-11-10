@@ -160,7 +160,8 @@ bool UNpcifyCharacterComponent::RequireInputMode(Npcify::EInputMode Mode, const 
 
 void UNpcifyCharacterComponent::CheckInputModesWithCharacter(TFunction<void()> OnPermitted)
 {
-    if (bInputModesChecked)
+    // After SIGHT_DISABLED the info is read again: the owner can turn sight on again.
+    if (bInputModesChecked && !IsSightInfoStale())
     {
         OnPermitted();
         return;
@@ -205,6 +206,14 @@ void UNpcifyCharacterComponent::CheckInputModesWithCharacter(TFunction<void()> O
             Json->TryGetBoolField(TEXT("speechInputEnabled"), bSpeechInput);
             bool bRealtimeMotion = false;
             Json->TryGetBoolField(TEXT("realtimeMotionEnabled"), bRealtimeMotion);
+            // sight: { enabled, provider }; an older server sends no sight, so it is off.
+            bool bSight = false;
+            const TSharedPtr<FJsonObject>* Sight = nullptr;
+            if (Json->TryGetObjectField(TEXT("sight"), Sight) && Sight != nullptr && Sight->IsValid())
+            {
+                (*Sight)->TryGetBoolField(TEXT("enabled"), bSight);
+            }
+            Self->ConfigureSight(bSight, bBaked || (Self->Runtime.IsValid() && Self->Runtime->HasBakedConversation()));
             Self->bLiveMotionInfoKnown = true;
             Self->bLiveMotionInEffect = bRealtimeMotion;
             Self->bSpeechInputKnown = true;

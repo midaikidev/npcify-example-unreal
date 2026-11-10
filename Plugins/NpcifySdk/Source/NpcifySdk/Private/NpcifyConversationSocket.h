@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
+#include "Core/NpcifySight.h"
 #include "Core/NpcifySocketIo.h"
 
 #include <memory>
@@ -24,6 +25,8 @@ public:
     /** A stream event of the joined conversation. */
     TFunction<void(const Npcify::FNpcifyMsgPackValue&)> OnStreamEvent;
     TFunction<void(const FString&)> OnLog;
+    /** A sight_observation event (the JSON array of the event) of any conversation of the socket. */
+    TFunction<void(const std::string&)> OnSightObservation;
 
     /**
      * Joins the room; OnDone(true) after the acknowledgement, false after a failure or 10 s.
@@ -37,11 +40,26 @@ public:
     bool IsRefused(const FString& ConversationId) const;
     void Leave();
 
+    /**
+     * Sends conversations:sight on the connection that joined the conversation of the frame.
+     * Done gets the acknowledgement, CONVERSATION_TIMEOUT after 20 s, or CONVERSATION_DISCONNECTED
+     * when the conversation is not joined or the connection closes first. Done runs on the game thread.
+     */
+    void SendSightFrame(const Npcify::FSightFrameRequest& Request, TFunction<void(const Npcify::FSightAck&)> Done);
+
 private:
     void Open();
     void Shutdown(bool bReconnect);
     bool Tick(float DeltaSeconds);
     void FinishWaiters(bool bJoined);
+    /** Completes the sight frames that wait for an acknowledgement. */
+    void FinishSightFrames(const char* Code, bool bExpiredOnly);
+
+    struct FSightWait
+    {
+        TFunction<void(const Npcify::FSightAck&)> Done;
+        double Deadline = 0.0;
+    };
 
     FString Url;
     std::string ApiToken;
@@ -55,6 +73,7 @@ private:
     /** The conversation of the refusal that the next Tick handles. */
     FString RefusedNowId;
     TArray<TFunction<void(bool)>> Waiters;
+    TMap<int64, FSightWait> SightWaits;
     FTSTicker::FDelegateHandle TickHandle;
     double JoinDeadline = 0.0;
     double LastReceived = 0.0;

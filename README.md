@@ -70,7 +70,7 @@ Esc stops Play In Editor, so use **Q** in the editor.
 | Editor import of the characters | `Source/NpcifyExampleEditor/Private/NpcifyImportCharactersCommandlet.cpp` |
 
 `UNpcifyCharacterComponent` from the Npcify Unreal SDK (`Plugins/NpcifySdk`,
-version 0.5.0) does the character work: it plays each staging (speech audio,
+version 0.7.0) does the character work: it plays each staging (speech audio,
 lip-sync visemes, expressions, animation cues, typewriter text) and sets the
 morph targets of the VRM model.
 
@@ -85,6 +85,12 @@ morph targets of the VRM model.
   `PrepareLiveMotion()` when the player opens the conversation with the talk
   key and when the reply box gets focus, so that the first reply does not wait
   for the GPU. A character without live motion plays its animation clips.
+- **Sight.** When the owner of the online character turns **sight** on in its
+  Sight tab, the NPC sees the game: when the conversation exists, the game
+  calls `StartSight` with the game viewport, and the SDK sends a frame of the
+  viewport every 5 s and when the picture changes. The character reads what it
+  saw in its next reply. The owner pays each frame. The end of the
+  conversation stops sight.
 
 ### Characters and animations
 

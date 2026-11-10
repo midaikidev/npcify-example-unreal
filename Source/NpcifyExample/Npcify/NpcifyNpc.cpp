@@ -105,6 +105,17 @@ void ANpcifyNpc::Tick(float DeltaSeconds)
 		}
 	}
 	SetActorRotation(FMath::RInterpConstantTo(GetActorRotation(), Desired, DeltaSeconds, 240.f));
+
+	// The online character sees the game view during the conversation when its owner turned sight
+	// on in the Sight tab. The component reads the character info before it creates the conversation.
+	if (bSightPending && !Npcify->GetRuntime().GetConversationId().empty())
+	{
+		bSightPending = false;
+		if (Npcify->GetSightState() == ENpcifySightState::Off)
+		{
+			Npcify->StartSight(FNpcifySightOptions());
+		}
+	}
 }
 
 FVector ANpcifyNpc::GetLabelLocation() const
@@ -125,6 +136,7 @@ void ANpcifyNpc::BeginConversation()
 {
 	Npcify->ResetConversation();
 	Npcify->CreateConversation();
+	bSightPending = Mode == ENpcifyConnectionMode::OnlineApi;
 }
 
 void ANpcifyNpc::Reply(const FString& Message)
@@ -142,6 +154,8 @@ void ANpcifyNpc::PrepareLiveMotion()
 
 void ANpcifyNpc::EndConversation()
 {
+	bSightPending = false;
+	Npcify->StopSight();
 	Npcify->StopSpeaking();
 	FaceTowards(nullptr);
 }

@@ -7,6 +7,7 @@
 namespace
 {
     constexpr double JoinTimeoutSeconds = 10.0;
+    constexpr double SightAckTimeoutSeconds = Npcify::FSightLimits::AckTimeoutMs / 1000.0;
 }
 
 FNpcifyConversationSocket::FNpcifyConversationSocket(const std::string& BaseUrl, const std::string& InApiToken)
@@ -26,6 +27,7 @@ FNpcifyConversationSocket::~FNpcifyConversationSocket()
     // A waiting turn must not run while its owner goes away: it would send a paid turn
     // that nobody plays.
     Waiters.Reset();
+    SightWaits.Reset();
     Shutdown(false);
 }
 
@@ -95,6 +97,43 @@ void FNpcifyConversationSocket::Leave()
     FinishWaiters(false);
 }
 
+void FNpcifyConversationSocket::SendSightFrame(const Npcify::FSightFrameRequest& Request, TFunction<void(const Npcify::FSightAck&)> Done)
+{
+    const int64 AckId = Socket.IsValid() && Socket->IsConnected() && Session.IsValid() ? Session->SendSightFrame(Request) : -1;
+    if (AckId < 0)
+    {
+        if (Done)
+        {
+            Done(Npcify::FSightAck::NotAnswered(Npcify::SightCodes::Disconnected));
+        }
+        return;
+    }
+    FSightWait& Wait = SightWaits.Add(AckId);
+    Wait.Done = MoveTemp(Done);
+    Wait.Deadline = FPlatformTime::Seconds() + SightAckTimeoutSeconds;
+}
+
+void FNpcifyConversationSocket::FinishSightFrames(const char* Code, bool bExpiredOnly)
+{
+    const double Now = FPlatformTime::Seconds();
+    TArray<TFunction<void(const Npcify::FSightAck&)>> Done;
+    for (auto It = SightWaits.CreateIterator(); It; ++It)
+    {
+        if (!bExpiredOnly || Now > It.Value().Deadline)
+        {
+            Done.Add(MoveTemp(It.Value().Done));
+            It.RemoveCurrent();
+        }
+    }
+    for (TFunction<void(const Npcify::FSightAck&)>& Callback : Done)
+    {
+        if (Callback)
+        {
+            Callback(Npcify::FSightAck::NotAnswered(Code));
+        }
+    }
+}
+
 void FNpcifyConversationSocket::Open()
 {
     const TWeakPtr<FNpcifyConversationSocket> Weak = AsShared();
@@ -105,6 +144,32 @@ void FNpcifyConversationSocket::Open()
         if (Self.IsValid() && Self->Socket.IsValid() && Self->Socket->IsConnected())
         {
             Self->Socket->Send(UTF8_TO_TCHAR(Text.c_str()));
+        }
+    };
+    // The WebSocket sends text and binary messages from one queue, in order.
+    Session->SendBinary = [Weak](const std::vector<uint8_t>& Data)
+    {
+        const TSharedPtr<FNpcifyConversationSocket> Self = Weak.Pin();
+        if (Self.IsValid() && Self->Socket.IsValid() && Self->Socket->IsConnected())
+        {
+            Self->Socket->Send(Data.data(), Data.size(), true);
+        }
+    };
+    Session->OnAck = [Weak](int64_t AckId, const std::string& Json)
+    {
+        const TSharedPtr<FNpcifyConversationSocket> Self = Weak.Pin();
+        FSightWait Wait;
+        if (Self.IsValid() && Self->SightWaits.RemoveAndCopyValue(AckId, Wait) && Wait.Done)
+        {
+            Wait.Done(Npcify::FSightAck::FromAckJson(Json));
+        }
+    };
+    Session->OnSightObservation = [Weak](const std::string& Json)
+    {
+        const TSharedPtr<FNpcifyConversationSocket> Self = Weak.Pin();
+        if (Self.IsValid() && Self->OnSightObservation)
+        {
+            Self->OnSightObservation(Json);
         }
     };
     Session->OnStreamEvent = [Weak](const std::string&, const Npcify::FNpcifyMsgPackValue& Event)
@@ -226,6 +291,8 @@ void FNpcifyConversationSocket::Shutdown(bool bReconnect)
     Session.Reset();
     BinaryBuffer.Reset();
     FinishWaiters(false);
+    // A lost connection loses the acknowledgements: the next frame joins again first.
+    FinishSightFrames(Npcify::SightCodes::Disconnected, false);
     if (bReconnect && !DesiredConversationId.IsEmpty())
     {
         const double Delay = FMath::Min(10.0, static_cast<double>(1 << FMath::Min(ReconnectAttempt, 4)));
@@ -241,6 +308,10 @@ void FNpcifyConversationSocket::Shutdown(bool bReconnect)
 bool FNpcifyConversationSocket::Tick(float)
 {
     const double Now = FPlatformTime::Seconds();
+    if (SightWaits.Num() > 0)
+    {
+        FinishSightFrames(Npcify::SightCodes::Timeout, true);
+    }
     if (ReconnectAt < 0.0)
     {
         // The socket closed or failed in one of its callbacks.

@@ -38,6 +38,7 @@ void UNpcifyCharacterComponent::EndPlay(const EEndPlayReason::Type EndPlayReason
     // Late responses and waiting turns of this component must not run after EndPlay.
     ++ConversationGeneration;
     UnbindLiveMotionMesh();
+    ResetSight();
     StreamSocket.Reset();
     Runtime.Reset();
     Super::EndPlay(EndPlayReason);
@@ -53,6 +54,7 @@ void UNpcifyCharacterComponent::TickComponent(
     EnsureInitialized();
     Runtime->GetExpressions().bAutoBlinkEnabled = bAutoBlink;
     TickVoiceInput();
+    TickSight();
     UpdateGazeLayer();
     UpdateLiveMotion(DeltaTime);
     Runtime->Tick(static_cast<double>(DeltaTime), 0.0f);
@@ -264,6 +266,8 @@ bool UNpcifyCharacterComponent::LoadBakedConversationBytes(const TArray<uint8>& 
         // A baked conversation permits only the Options mode.
         CheckedInputModes = Npcify::ResolveInputModes(ToCoreInputModes(InputModes), false, true, false);
         bInputModesChecked = true;
+        // Sight is never available in a baked conversation.
+        ConfigureSight(false, true);
         std::vector<uint8_t> Bytes(NpcpBytes.GetData(), NpcpBytes.GetData() + NpcpBytes.Num());
         auto Baked = std::make_unique<Npcify::FNpcifyBakedConversation>(
             Npcify::FNpcifyBakedConversation::FromBytes(Bytes, TCHAR_TO_UTF8(*CharacterId))
@@ -301,6 +305,7 @@ void UNpcifyCharacterComponent::ResetConversation()
     EnsureInitialized();
     StopSpeaking();
     ++ConversationGeneration;
+    StopSight();
     Runtime->ResetConversationState();
     if (StreamSocket.IsValid()) StreamSocket->Leave();
     LiveMotionPreparedConversation.Empty();
@@ -406,6 +411,7 @@ void UNpcifyCharacterComponent::RebuildRuntime()
     // A new endpoint or key needs a new conversation stream, and the requests of the old
     // runtime must not continue with it.
     ++ConversationGeneration;
+    ResetSight();
     StreamSocket.Reset();
     LiveMotionPreparedConversation.Empty();
     StreamJoinGivenUp.Empty();

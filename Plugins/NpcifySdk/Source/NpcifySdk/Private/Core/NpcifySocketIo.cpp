@@ -425,6 +425,11 @@ namespace Npcify
         case 1:
             return false;
         case 3:
+            if (Packet.AckId >= 0 && Packet.AckId != JoinAckId && OnAck)
+            {
+                OnAck(Packet.AckId, Packet.Json);
+                return true;
+            }
             if (bJoinPending && Packet.AckId == JoinAckId)
             {
                 bJoinPending = false;
@@ -449,7 +454,17 @@ namespace Npcify
             Refuse(ConversationId);
             return false;
         case 2:
-            if (FNpcifySocketIo::ReadEventName(Packet.Json) == "exception")
+        {
+            const std::string EventName = FNpcifySocketIo::ReadEventName(Packet.Json);
+            if (EventName == "sight_observation")
+            {
+                if (OnSightObservation)
+                {
+                    OnSightObservation(Packet.Json);
+                }
+                return true;
+            }
+            if (EventName == "exception")
             {
                 if (OnLog)
                 {
@@ -474,6 +489,7 @@ namespace Npcify
                 }
             }
             return true;
+        }
         case 5:
         case 6:
         {

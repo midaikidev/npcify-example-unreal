@@ -42,6 +42,13 @@ void UNpcifyCharacterComponent::JoinConversationStream(const FString& Conversati
         {
             UE_LOG(LogNpcifyStream, Log, TEXT("%s"), *Message);
         };
+        StreamSocket->OnSightObservation = [WeakThis](const std::string& Json)
+        {
+            if (WeakThis.IsValid())
+            {
+                WeakThis->HandleSightObservation(Json);
+            }
+        };
     }
     StreamSocket->Join(ConversationIdStr, MoveTemp(OnDone));
 }

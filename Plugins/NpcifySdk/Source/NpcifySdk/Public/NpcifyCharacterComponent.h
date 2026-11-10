@@ -9,6 +9,7 @@
 #include "InputCoreTypes.h"
 #include "Core/NpcifyCharacterRuntime.h"
 #include "Core/NpcifySpeechInput.h"
+#include "NpcifySightTypes.h"
 #include "NpcifyCharacterComponent.generated.h"
 
 /** How the player can reply (docs/voice-input.md). */
@@ -41,6 +42,7 @@ enum class ENpcifyListeningState : uint8
 
 struct FNpcifyVoiceCapture;
 struct FNpcifyLiveMotionBinding;
+struct FNpcifySightBinding;
 class FNpcifyConversationSocket;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifySpeechEventSignature, const FString&, StagingId, const FString&, Text);
@@ -51,6 +53,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNpcifyConversationEndedSignature);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyListeningStateSignature, ENpcifyListeningState, State);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifyTranscriptSignature, const FString&, Text, bool, bSent);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FNpcifyLiveMotionFramesSignature, const FString&, StagingId, int32, StartFrame, int32, FrameCount);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifySightSignature, const FNpcifySightObservation&, Observation);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifySightStateSignature, ENpcifySightState, State, const FString&, ErrorCode);
 
 UCLASS(ClassGroup=(Npcify), meta=(BlueprintSpawnableComponent, DisplayName="Npcify Character"))
 class NPCIFYSDK_API UNpcifyCharacterComponent : public UActorComponent
@@ -234,6 +238,34 @@ public:
     UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
     FNpcifyLiveMotionFramesSignature OnLiveMotionFrames;
 
+    /**
+     * Lets the character see (docs/sight.md): the game viewport, or the texture or scene capture
+     * of the options. Needs a conversation. Returns false and reports OnError when sight cannot
+     * start: SIGHT_DISABLED (unavailable), CONVERSATION_REQUIRED or SIGHT_ALREADY_STARTED. A start
+     * that fails later (the source, the join) reports OnSightState(Off, code) and OnError.
+     */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Sight")
+    bool StartSight(const FNpcifySightOptions& Options);
+
+    /** Stops the frames and releases the source. */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Sight")
+    void StopSight();
+
+    /**
+     * Unavailable until the character info turns sight on (its owner's Sight tab; the info is
+     * read when a conversation starts), and in a baked conversation; then Off, Starting or On.
+     */
+    UFUNCTION(BlueprintPure, Category="Npcify|Sight")
+    ENpcifySightState GetSightState() const;
+
+    /** An observation of the current conversation. */
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifySightSignature OnSight;
+
+    /** The sight state changed. ErrorCode: the failure that stopped sight or its start, else empty. */
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifySightStateSignature OnSightState;
+
     /** The staging that plays or played last. */
     UFUNCTION(BlueprintPure, Category="Npcify|Conversation")
     FString GetActiveStagingId() const;
@@ -402,6 +434,17 @@ private:
     void UnbindLiveMotionMesh();
     UFUNCTION()
     void HandleBoneTransformsFinalized();
+    /** Sight: NpcifyCharacterComponentSight.cpp. The binding exists after the first StartSight. */
+    FNpcifySightBinding& GetSightBinding();
+    /** The state from the character info while there is no binding. */
+    ENpcifySightState ConfiguredSightState() const;
+    void ConfigureSight(bool bEnabled, bool bBaked);
+    /** True after the server refused a frame with SIGHT_DISABLED: the next conversation reads the info again. */
+    bool IsSightInfoStale() const;
+    void TickSight();
+    /** Stops sight and drops its state (EndPlay, a new runtime). */
+    void ResetSight();
+    void HandleSightObservation(const std::string& Json);
     /** Sends a reply after the input-mode checks of Speak, Reply or SendTranscript. */
     void SendReply(const FString& Message);
     /** Voice input: NpcifyCharacterComponentVoice.cpp. */
@@ -449,6 +492,11 @@ private:
     int32 ConversationGeneration = 0;
     TSharedPtr<FNpcifyConversationSocket> StreamSocket;
     TSharedPtr<FNpcifyLiveMotionBinding> LiveMotionBinding;
+    TSharedPtr<FNpcifySightBinding> SightBinding;
+    /** The sight switch of the character info (sight.enabled) and a baked conversation, once read. */
+    bool bSightInfoRead = false;
+    bool bSightEnabled = false;
+    bool bSightBaked = false;
     FString LiveMotionPreparedConversation;
     /** A turn stopped waiting for the stream of this conversation; later turns do not wait for it. */
     FString StreamJoinGivenUp;

@@ -44,8 +44,20 @@ public class NpcifySdk : ModuleRules
                 "AudioMixer",
                 // The conversation stream of live motion (Socket.IO over a WebSocket).
                 "WebSockets",
+                // Sight: the scaled copy and the readback of the viewport or a texture, and the JPEG.
+                "ImageWrapper",
+                "RenderCore",
+                "RHI",
+                "Slate",
+                "SlateCore",
             }
         );
+
+        // Sight reads the readback of an Apple GPU from shared memory (Private/Apple).
+        if (Target.IsInPlatformGroup(UnrealPlatformGroup.Apple))
+        {
+            PublicFrameworks.Add("Metal");
+        }
 
         AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");
     }
