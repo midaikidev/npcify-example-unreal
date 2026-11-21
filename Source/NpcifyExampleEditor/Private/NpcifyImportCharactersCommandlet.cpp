@@ -18,6 +18,7 @@
 #include "RetargetEditor/IKRetargeterController.h"
 #include "Rig/IKRigDefinition.h"
 #include "UObject/Package.h"
+#include "VrmMetaObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/SavePackage.h"
@@ -120,6 +121,90 @@ namespace
 	 * VRM4U leaves mtoon_Cutoff at 0 for VRM 1.0 materials, so alpha-masked parts
 	 * (for example the area around a face texture) stay visible. Copy the glTF alphaCutoff.
 	 */
+	/**
+	 * VRM4U reads no VRMC_node_constraint of a VRM 1.0 file (VrmConvertMetadata.cpp looks for it at the document's
+	 * root, not in each node), and its constraint node walks the map in its order, so a constrained bone under a
+	 * constrained bone needs its parent first. This fills the rotation constraints from the file's nodes, parents
+	 * first, into the character's meta object. Returns the number of constraints.
+	 */
+	int32 FillRotationConstraints(const FString& VrmFile, UVrmAssetListObject* Character)
+	{
+		UVrmMetaObject* Meta = Character ? Character->VrmMetaObject : nullptr;
+		const TSharedPtr<FJsonObject> Root = ReadGlbJson(VrmFile);
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if (Meta == nullptr || Character->SkeletalMesh == nullptr || !Root.IsValid() || !Root->TryGetArrayField(TEXT("nodes"), Nodes))
+		{
+			return 0;
+		}
+		const FReferenceSkeleton& Reference = Character->SkeletalMesh->GetRefSkeleton();
+		auto BoneName = [&Reference](const FString& Name)
+		{
+			const FString Plain = Name.Replace(TEXT(":"), TEXT("_"));
+			return Reference.FindBoneIndex(FName(*Name)) != INDEX_NONE ? Name
+				: (Reference.FindBoneIndex(FName(*Plain)) != INDEX_NONE ? Plain : FString());
+		};
+		TArray<int32> Parent;
+		Parent.Init(INDEX_NONE, Nodes->Num());
+		for (int32 Index = 0; Index < Nodes->Num(); ++Index)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+			if ((*Nodes)[Index]->AsObject()->TryGetArrayField(TEXT("children"), Children))
+			{
+				for (const TSharedPtr<FJsonValue>& Child : *Children)
+				{
+					Parent[static_cast<int32>(Child->AsNumber())] = Index;
+				}
+			}
+		}
+		struct FFound { int32 Depth; FString Name; FVRMConstraint Constraint; };
+		TArray<FFound> Found;
+		for (int32 Index = 0; Index < Nodes->Num(); ++Index)
+		{
+			const TSharedPtr<FJsonObject> Node = (*Nodes)[Index]->AsObject();
+			const TSharedPtr<FJsonObject>* Extensions = nullptr;
+			const TSharedPtr<FJsonObject>* Ext = nullptr;
+			const TSharedPtr<FJsonObject>* Constraint = nullptr;
+			const TSharedPtr<FJsonObject>* Rotation = nullptr;
+			if (!Node->TryGetObjectField(TEXT("extensions"), Extensions) ||
+				!(*Extensions)->TryGetObjectField(TEXT("VRMC_node_constraint"), Ext) ||
+				!(*Ext)->TryGetObjectField(TEXT("constraint"), Constraint) ||
+				!(*Constraint)->TryGetObjectField(TEXT("rotation"), Rotation))
+			{
+				continue;
+			}
+			const int32 Source = static_cast<int32>((*Rotation)->GetNumberField(TEXT("source")));
+			double Weight = 1.0;
+			(*Rotation)->TryGetNumberField(TEXT("weight"), Weight);
+			const FString Name = BoneName(Node->GetStringField(TEXT("name")));
+			const FString SourceName = Nodes->IsValidIndex(Source) ? BoneName((*Nodes)[Source]->AsObject()->GetStringField(TEXT("name"))) : FString();
+			if (Name.IsEmpty() || SourceName.IsEmpty())
+			{
+				UE_LOG(LogNpcifyImport, Warning, TEXT("Constraint of node %d: bone not found"), Index);
+				continue;
+			}
+			int32 Depth = 0;
+			for (int32 Up = Parent[Index]; Up != INDEX_NONE; Up = Parent[Up])
+			{
+				++Depth;
+			}
+			FFound Item{Depth, Name, FVRMConstraint()};
+			Item.Constraint.type = EVRMConstraintType::Rotation;
+			Item.Constraint.constraintRotation.source = Source;
+			Item.Constraint.constraintRotation.sourceName = SourceName;
+			Item.Constraint.constraintRotation.weight = static_cast<float>(Weight);
+			Found.Add(Item);
+		}
+		Found.StableSort([](const FFound& A, const FFound& B) { return A.Depth < B.Depth; });
+		Meta->VRMConstraintMeta.Empty();
+		for (const FFound& Item : Found)
+		{
+			Meta->VRMConstraintMeta.Add(Item.Name, Item.Constraint);
+		}
+		Meta->MarkPackageDirty();
+		SaveObjectPackage(Meta);
+		return Found.Num();
+	}
+
 	void ApplyAlphaCutoff(const FString& VrmFile, const FString& CharacterFolder)
 	{
 		const TSharedPtr<FJsonObject> Root = ReadGlbJson(VrmFile);
@@ -202,6 +287,7 @@ bool UNpcifyImportCharactersCommandlet::ImportCharacter(const FString& Folder)
 		return false;
 	}
 	ApplyAlphaCutoff(VrmFile, CharacterFolder);
+	UE_LOG(LogNpcifyImport, Display, TEXT("Rotation constraints: %d"), FillRotationConstraints(VrmFile, Character));
 	UIKRigDefinition* CharacterRig = FindHumanoidRig(Character);
 	UE_LOG(LogNpcifyImport, Display, TEXT("Imported %s -> %s (IK rig: %s)"), *VrmFile, *Character->GetPathName(),
 		CharacterRig ? *CharacterRig->GetPathName() : TEXT("missing"));
