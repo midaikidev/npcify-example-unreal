@@ -223,6 +223,9 @@ namespace Npcify
             WNode.TriggerText = Node.TriggerText;
             WNode.Text = Node.Payload.Text;
             WNode.Options = Node.Payload.Options;
+            WNode.InitialVariant = Node.Payload.Timeline.InitialVariant;
+            WNode.ActiveVariant = Node.Payload.Timeline.ActiveVariant;
+            WNode.ToolCalls = Node.Payload.Timeline.ToolCalls;
             Out.Stagings.push_back(std::move(WNode));
         }
         return Out;

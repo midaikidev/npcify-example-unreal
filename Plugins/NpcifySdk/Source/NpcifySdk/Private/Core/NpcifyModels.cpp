@@ -178,6 +178,8 @@ namespace Npcify
     {
         FStagingTimeline Out;
         Out.Duration = std::max(0.0, GetDoubleField(MapVal, "duration", 0.0));
+        Out.InitialVariant = GetStringField(MapVal, "initialVariant");
+        Out.ActiveVariant = GetStringField(MapVal, "activeVariant");
 
         const FNpcifyMsgPackValue* DialogueArr = MapVal.FindField("dialogue");
         if (DialogueArr && DialogueArr->IsArray())
@@ -258,6 +260,18 @@ namespace Npcify
         if (Track)
         {
             FNpcifyMotionFrames::TryParseTrack(*Track, Out.Motion);
+        }
+
+        const FNpcifyMsgPackValue* ToolCallsArr = MapVal.FindField("toolCalls");
+        if (ToolCallsArr && ToolCallsArr->IsArray())
+        {
+            for (const auto& Item : ToolCallsArr->ArrayValue)
+            {
+                if (Item.IsMap())
+                {
+                    Out.ToolCalls.push_back(MapToolCall(Item));
+                }
+            }
         }
 
         return Out;
@@ -466,9 +480,27 @@ namespace Npcify
 
         std::map<std::string, FNpcifyMsgPackValue> TimelineMap;
         TimelineMap["duration"] = FNpcifyMsgPackValue::MakeFloat(Payload.Timeline.Duration);
+        if (!Payload.Timeline.InitialVariant.empty())
+        {
+            TimelineMap["initialVariant"] = FNpcifyMsgPackValue::MakeString(Payload.Timeline.InitialVariant);
+        }
+        if (!Payload.Timeline.ActiveVariant.empty())
+        {
+            TimelineMap["activeVariant"] = FNpcifyMsgPackValue::MakeString(Payload.Timeline.ActiveVariant);
+        }
         TimelineMap["dialogue"] = FNpcifyMsgPackValue::MakeArray(std::move(DialogueList));
         TimelineMap["expressions"] = FNpcifyMsgPackValue::MakeArray(std::move(ExprList));
         TimelineMap["animations"] = FNpcifyMsgPackValue::MakeArray(std::move(AnimList));
+        if (!Payload.Timeline.ToolCalls.empty())
+        {
+            std::vector<FNpcifyMsgPackValue> ToolCallList;
+            ToolCallList.reserve(Payload.Timeline.ToolCalls.size());
+            for (const auto& Call : Payload.Timeline.ToolCalls)
+            {
+                ToolCallList.push_back(ToolCallToMsgPack(Call));
+            }
+            TimelineMap["toolCalls"] = FNpcifyMsgPackValue::MakeArray(std::move(ToolCallList));
+        }
 
         std::vector<FNpcifyMsgPackValue> OptionsList;
         for (const auto& Opt : Payload.Options)

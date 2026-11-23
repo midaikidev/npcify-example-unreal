@@ -4,9 +4,11 @@
 #include "Components/ActorComponent.h"
 #include "Components/AudioComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundWaveProcedural.h"
 #include "InputCoreTypes.h"
+#include "UObject/ObjectKey.h"
 #include "Core/NpcifyCharacterRuntime.h"
 #include "Core/NpcifySpeechInput.h"
 #include "NpcifySightTypes.h"
@@ -40,6 +42,39 @@ enum class ENpcifyListeningState : uint8
     Recognizing,
 };
 
+USTRUCT(BlueprintType)
+struct NPCIFYSDK_API FNpcifyToolCallEvent
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString Id;
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString Name = TEXT("switch_variant");
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    float Timestamp = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString Variant = TEXT("default");
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    bool bOk = false;
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString Status = TEXT("applied");
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString PreviousVariant = TEXT("default");
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString ActiveVariant = TEXT("default");
+
+    UPROPERTY(BlueprintReadOnly, Category="Npcify|Variants")
+    FString Error;
+};
+
 struct FNpcifyVoiceCapture;
 struct FNpcifyLiveMotionBinding;
 struct FNpcifySightBinding;
@@ -48,6 +83,8 @@ class FNpcifyConversationSocket;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifySpeechEventSignature, const FString&, StagingId, const FString&, Text);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifyCharacterRevealSignature, const FString&, RevealedText, const FString&, Character);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNpcifyAnimationRequestSignature, const FString&, AnimationId, bool, bLoop);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyVariantChangedSignature, const FString&, VariantKey);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyToolCallSignature, const FNpcifyToolCallEvent&, ToolCall);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyErrorSignature, const FString&, ErrorMessage);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNpcifyConversationEndedSignature);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNpcifyListeningStateSignature, ENpcifyListeningState, State);
@@ -72,6 +109,10 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Connection")
     FString Endpoint = TEXT("https://api.npcify.ai");
+
+    /** Optional player memory identifier when SDK Player Memory is enabled; empty shares the character owner's Dashboard -> Memory bucket. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Connection")
+    FString MemoryIdentifier;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio")
     AActor* GazeTargetActor = nullptr;
@@ -98,8 +139,15 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio", meta=(EditCondition="bSpatialAudio", ClampMin="1"))
     float VoiceFalloffDistance = 2750.0f;
 
+    /**
+     * The face blinks by itself, as people do: at irregular intervals, more often while it
+     * speaks, and with a large gaze shift, a fast turn of the head or a new animation.
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Rig & Audio")
     bool bAutoBlink = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Variants")
+    TMap<FString, TObjectPtr<USkeletalMesh>> VariantMeshes;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Npcify|Offline Baked Conversation")
     TArray<uint8> BakedConversationBytes;
@@ -118,6 +166,12 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
     FNpcifyAnimationRequestSignature OnAnimationRequested;
+
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifyVariantChangedSignature OnVariantChanged;
+
+    UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
+    FNpcifyToolCallSignature OnToolCall;
 
     UPROPERTY(BlueprintAssignable, Category="Npcify|Events")
     FNpcifyErrorSignature OnError;
@@ -277,6 +331,12 @@ public:
     UFUNCTION(BlueprintCallable, Category="Npcify|Character")
     void Configure(const FString& InBaseUrl, const FString& InCharacterId, const FString& InApiKey);
 
+    UFUNCTION(BlueprintCallable, Category="Npcify|Connection")
+    void SetMemoryIdentifier(const FString& InMemoryIdentifier);
+
+    UFUNCTION(BlueprintPure, Category="Npcify|Connection")
+    FString GetMemoryIdentifier() const;
+
     UFUNCTION(BlueprintCallable, Category="Npcify|Character")
     bool ConfigureFromJson(const FString& ConfigJson);
 
@@ -352,6 +412,27 @@ public:
     UFUNCTION(BlueprintCallable, Category="Npcify|Animation")
     void PlayAnimation(const FString& AnimationId, bool bLoop = false);
 
+    /**
+     * Tells the face that the body starts the animation AnimationId, for example the return to
+     * idle that the game plays by itself: people blink when they start another movement.
+     * PlayAnimation does this.
+     */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Animation")
+    void NoteAnimationStarted(const FString& AnimationId);
+
+    /**
+     * Asks for a blink because the character starts a movement. Chance is the part of such
+     * movements that bring a blink. Returns whether a blink starts.
+     */
+    UFUNCTION(BlueprintCallable, Category="Npcify|Expressions")
+    bool RequestBlink(float Chance = 1.0f);
+
+    UFUNCTION(BlueprintCallable, Category="Npcify|Variants")
+    void SwitchVariant(const FString& VariantKey);
+
+    UFUNCTION(BlueprintPure, Category="Npcify|Variants")
+    FString GetActiveVariant() const;
+
     UFUNCTION(BlueprintCallable, Category="Npcify|Gaze")
     void LookAtActor(AActor* TargetActor);
 
@@ -399,8 +480,12 @@ protected:
 private:
     void EnsureInitialized();
     void RebuildRuntime();
+    std::string ResolveMemoryIdentifier();
     void UpdateGazeLayer();
     void ApplyMorphTargets();
+    void ApplyVariantMesh(const FString& VariantKey);
+    void HandleVariantChanged(const FString& VariantKey);
+    void HandleToolCall(const Npcify::FNpcifyStagingToolCall& Call);
     void HandleAudioBlock(const Npcify::FStagingDialogueBlock& Block, const Npcify::FNpcifyDecodedAudio& DecodedAudio);
     void QueuePcm(const int16* Samples, int32 NumSamples, int32 SampleRate, int32 Channels);
     /**
@@ -461,6 +546,16 @@ private:
     UPROPERTY(Transient)
     TArray<USkeletalMeshComponent*> SkeletalMeshes;
 
+    /** The morph targets of a skeletal mesh and what each plays (one target for each lid). */
+    struct FMorphTargetPlan
+    {
+        TArray<FName> Names;
+        Npcify::FNpcifyMorphTargetPlan Plan;
+    };
+    TMap<TObjectKey<USkeletalMesh>, FMorphTargetPlan> MorphTargetPlans;
+    /** The mesh of the last head rotation: another mesh (the next variant) is no turn of the head. */
+    TObjectKey<USkeletalMesh> TrackedHeadMesh;
+
     UPROPERTY(Transient)
     TArray<UMaterialInterface*> CachedMaterials;
 
@@ -503,5 +598,6 @@ private:
     /** The character's live motion switch from its info, once read. */
     bool bLiveMotionInfoKnown = false;
     bool bLiveMotionInEffect = false;
+    FString LastSyncedMemoryIdentifier;
     FVector LookAtWorldLocation = FVector::ZeroVector;
 };

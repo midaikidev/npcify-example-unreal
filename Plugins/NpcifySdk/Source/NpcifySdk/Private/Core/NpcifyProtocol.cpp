@@ -385,6 +385,57 @@ namespace Npcify
         return It != MapValue.end() ? &It->second : nullptr;
     }
 
+    bool FNpcifyProtocol::IsValidVariantKey(const std::string& Key)
+    {
+        if (Key.empty() || Key.size() > 32)
+        {
+            return false;
+        }
+        const auto IsLowerAlphaNum = [](unsigned char Ch)
+        {
+            return (Ch >= 'a' && Ch <= 'z') || (Ch >= '0' && Ch <= '9');
+        };
+        if (!IsLowerAlphaNum(static_cast<unsigned char>(Key[0])))
+        {
+            return false;
+        }
+        for (size_t Index = 1; Index < Key.size(); ++Index)
+        {
+            const unsigned char Ch = static_cast<unsigned char>(Key[Index]);
+            if (!IsLowerAlphaNum(Ch) && Ch != '_' && Ch != '-')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::string FNpcifyProtocol::UrlEncode(const std::string& Input)
+    {
+        static const char HexDigits[] = "0123456789ABCDEF";
+        std::string Out;
+        Out.reserve(Input.size());
+        for (unsigned char Ch : Input)
+        {
+            const bool bUnreserved =
+                (Ch >= 'A' && Ch <= 'Z') ||
+                (Ch >= 'a' && Ch <= 'z') ||
+                (Ch >= '0' && Ch <= '9') ||
+                Ch == '-' || Ch == '_' || Ch == '.' || Ch == '~';
+            if (bUnreserved)
+            {
+                Out.push_back(static_cast<char>(Ch));
+            }
+            else
+            {
+                Out.push_back('%');
+                Out.push_back(HexDigits[(Ch >> 4) & 0x0fU]);
+                Out.push_back(HexDigits[Ch & 0x0fU]);
+            }
+        }
+        return Out;
+    }
+
     uint32_t FNpcifyProtocol::Checksum(const uint8_t* Data, size_t Length)
     {
         uint32_t Crc = 0xffffffffU;
@@ -419,14 +470,19 @@ namespace Npcify
 
     FNpcifyMsgPackValue FNpcifyProtocol::DecodeMsgPack(const std::vector<uint8_t>& Bytes) { return DecodeMsgPack(Bytes.data(), Bytes.size()); }
 
-    std::vector<uint8_t> FNpcifyProtocol::EncodeNpcp(ENpcifyPerformanceKind Kind, const FNpcifyMsgPackValue& Value, bool bCompress)
+    std::vector<uint8_t> FNpcifyProtocol::EncodeNpcp(
+        ENpcifyPerformanceKind Kind,
+        const FNpcifyMsgPackValue& Value,
+        bool bCompress,
+        uint8_t InMinorVersion
+    )
     {
         const std::vector<uint8_t> Plain = EncodeMsgPack(Value);
         if (Plain.empty() || Plain.size() > MaxBytes) throw std::runtime_error("Performance exceeds the protocol size limit.");
         const std::vector<uint8_t> Body = bCompress ? GzipCompressBytes(Plain) : Plain;
         std::vector<uint8_t> Result(HeaderSize + Body.size(), 0);
         WriteUInt32Le(Result.data(), NpcpMagic);
-        Result[4] = 1; Result[5] = 0; Result[6] = static_cast<uint8_t>(Kind); Result[7] = bCompress ? 1 : 0;
+        Result[4] = MajorVersion; Result[5] = InMinorVersion; Result[6] = static_cast<uint8_t>(Kind); Result[7] = bCompress ? 1 : 0;
         WriteUInt16Le(Result.data() + 8, static_cast<uint16_t>(HeaderSize));
         WriteUInt16Le(Result.data() + 10, 0);
         WriteUInt32Le(Result.data() + 12, static_cast<uint32_t>(Body.size()));

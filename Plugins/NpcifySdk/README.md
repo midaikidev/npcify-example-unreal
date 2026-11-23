@@ -6,7 +6,7 @@ Unreal Engine 5 C++ & Blueprint plugin (`NpcifySdk.uplugin`) for embedding Npcif
 
 - **NPCP v1.0 Binary Performance Codec (`FNpcifyProtocol`, `FNpcifySchemaMapper`)**: Native C++17 implementation of the 24-byte NPCP envelope, IEEE 802.3 CRC-32 validation, bounded GZip decompression, and strict MessagePack wire validation.
 - **Offline Baked Conversations (`FNpcifyBakedConversation`)**: Load `.npcp` baked conversation assets (`npcify.baked-conversation`) with embedded WAV/PCM audio, cycle/parent/option validation, and instant offline branching (`Start()`, `Select()`, `Reply()`, `Worldline()`).
-- **Layered Facial Expression & Viseme Mixer (`FNpcifyFacialMixer`, `FNpcifyVisemePlayer`)**: Multi-layer blending (`Emotion`, `Viseme`, `Blink`, `Gaze`), exponential smoothing, automatic natural blinking, coarticulated viseme scheduling, and automatic alias resolution across VRM 1.0 (`aa`, `ih`, `ou`, `ee`, `oh`, `happy`), VRM 0.x (`A`, `I`, `U`, `E`, `O`, `Joy`), and ARKit/MetaHuman morph targets (`jawOpen`, `mouthSmileLeft`, `eyeBlinkLeft`, `Fcl_MTH_A`).
+- **Layered Facial Expression & Viseme Mixer (`FNpcifyFacialMixer`, `FNpcifyVisemePlayer`)**: Multi-layer blending (`Emotion`, `Viseme`, `Blink`, `Gaze`), exponential smoothing, blinks as people do ([Blinks](#blinks)), coarticulated viseme scheduling, and automatic alias resolution across VRM 1.0 (`aa`, `ih`, `ou`, `ee`, `oh`, `happy`), VRM 0.x (`A`, `I`, `U`, `E`, `O`, `Joy`), and ARKit/MetaHuman morph targets (`jawOpen`, `mouthSmileLeft`, `eyeBlinkLeft`, `Fcl_MTH_A`).
 - **Unreal `UActorComponent` Integration (`UNpcifyCharacterComponent`)**:
   - Blueprint & C++ component (`Add Component > Npcify Character`).
   - Automatic binding to owner `USkeletalMeshComponent` morph targets and 3D spatial `UAudioComponent` (`USoundWaveProcedural`). See [Spatial Voice](#spatial-voice).
@@ -14,11 +14,12 @@ Unreal Engine 5 C++ & Blueprint plugin (`NpcifySdk.uplugin`) for embedding Npcif
   - Live motion: the generated body motion of each reply on a VRM skeleton, and `PrepareLiveMotion()`. See [Live Motion](#live-motion).
   - Streamed replies: a reply starts to play when the audio of its first block is complete, before the reply is complete. See [Streamed Replies](#streamed-replies).
   - Sight: the character sees the game viewport, a render target or a scene capture, and its replies use what it sees. See [Sight](#sight).
+  - SDK player memory: `MemoryIdentifier` / `SetMemoryIdentifier` / `GetMemoryIdentifier` isolates memories per player when **SDK Player Memory** is enabled in **Export → Unreal**, or shares the character owner's **Dashboard → Memory** bucket when left empty.
   - Fine-grained control: `LookAtActor`, `LookAtComponent`, `LookAtLocation`, `ClearLookAt`, `PlayAnimation`, `SetEmotion`, `PlayExpressionCue`, `Speak`, `Reply`, `StartBakedConversation`, `GetBoneTransform`, `GetMouthOpenness`.
 
 ## Installation
 
-Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.7.0`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
+Download the latest plugin archive from `https://npcify.ai/sdk/unreal/latest` (or a specific version from `https://npcify.ai/sdk/unreal/app/0.10.0`) and extract it into your Unreal project's `Plugins/NpcifySdk` directory:
 
 ```bash
 mkdir -p Plugins/NpcifySdk
@@ -209,6 +210,32 @@ prepared animation clips (`OnAnimationRequested`).
   conversation ID). The refusal of a conversation that you left while the
   server checked it does not stop the next conversation.
 
+## Appearance Variants
+
+A staging can change the character's appearance variant with a
+`switch_variant` tool call ([performance protocol](../../docs/performance-protocol.md)).
+Give each variant a skeletal mesh in `VariantMeshes` (variant key to mesh). At a
+change the component sets that mesh on the primary skeletal mesh component
+(`SetSkeletalMeshAsset`), binds live motion to it and broadcasts
+`OnVariantChanged`.
+
+A change of variant changes the model only. The motion continues on the next
+mesh (SDK 0.8.1 and later):
+
+- **Same skeleton:** the engine keeps the animation; the SDK changes nothing.
+- **Other skeleton** (each VRM4U import has its own `USkeleton`): the engine
+  makes a new anim instance. The SDK gives it the state of the previous one: a
+  `PlayAnimation` animation continues with its asset, time, play rate and loop
+  mode, and each active montage continues at its position and weight. The
+  animation asset must play on the next skeleton (the same bones, or a
+  compatible skeleton). Use `OnVariantChanged` to play the variant's own
+  animations. The state of an Animation Blueprint (state machines, variables)
+  starts again.
+- **Live motion:** the weight and the pose continue on the next mesh.
+- **Spring bones:** with another skeleton the engine also makes a new
+  post-process anim instance, so the VRM4U spring bones start again from their
+  rest shape. With the same skeleton they continue.
+
 ## Sight
 
 When the owner of a character turns **sight** on in its Sight tab, the
@@ -299,6 +326,66 @@ Unreal hears from the camera by default. In a third-person game, call
 `APlayerController::SetAudioListenerAttenuationOverride` with the player character
 so that the distance to the player sets the volume, while the camera direction
 sets the panning.
+
+## Blinks
+
+The face blinks as people do, by the rules of the Web SDK and the rendered
+video ([template-face playback](../../packages/vrm-renderer/README.md#template-face-playback),
+`Npcify::FNpcifyIdleBlinks`):
+
+- The interval between two blinks is irregular: 3.2 s in the middle, 1.2 s at
+  least, 9 s at most (about 17 blinks a minute). While the character speaks
+  (visemes play), the intervals are a quarter shorter.
+- A blink takes 300 ms: the lids close in 80 ms, stay closed for 50 ms and open
+  in 170 ms, fast at first and slowly at the end. One blink takes 0.85 to 1.25
+  times that length. A second, shorter blink follows 12 % of the blinks.
+- A blink goes with a movement. The component asks for one when an animation
+  starts (`PlayAnimation` or a staging cue: 9 in 10), on the return to the idle
+  animation (6 in 10), at the start of live motion (9 in 10), at a fast turn of
+  `HeadBoneName` (none below 8 degrees, always from 30 degrees, measured against
+  the direction of 0.3 s ago) and at a large gaze shift of `LookAt` (the same
+  numbers).
+- No movement starts a blink while one plays or within 0.6 s after one.
+  Requests less than 0.5 s apart count as one movement with the largest
+  chance.
+- A cue on `blink`, `blinkLeft` or `blinkRight` stops the idle blink while it
+  plays. The blink plays in full with every emotion: before 0.9.0 a `happy`
+  weight above 0.5 made it smaller (a fifth at full `happy`), although on a
+  generated face `happy` plays only the mouth smile.
+
+A game that plays its own animations calls `NoteAnimationStarted(AnimationId)`
+when it starts one, for example the return to idle at the end of a gesture.
+The idle animation is the character's `idleAnimationId` ("idle" until the
+character info is read). `RequestBlink(Chance)` asks for a blink at any other
+movement. Turn `bAutoBlink` off to drive the lids yourself.
+
+The SDK plays one morph target for each lid (`Npcify::FNpcifyMorphTargetPlan`).
+A generated face has `blink`, `blinkLeft`, `blinkRight`, `eyeBlinkLeft` and
+`eyeBlinkRight`, and a VRoid face has `Fcl_EYE_Close` and its two sides. Before
+0.9.0 all of them played the blink, so each lid closed two or three times.
+
+### Expressions of the VRM File
+
+A mesh that VRM4U imported has the expressions of its VRM file (VRM4U's
+`BlendShapeGroup` data). Since 0.10.0 the SDK reads them and plays each expression with the
+morph targets that the file binds to it, as the Web SDK does. For a generated
+face, `happy` plays the joy shape of the face and stops the blinks, and `ou`
+and `oh` play only their own shapes.
+
+- An expression that the file binds does not play by alias names. Thus a bound
+  `happy` does not play `mouthSmileLeft`, and a bound `aa` does not play
+  `jawOpen`.
+- An expression without binds keeps the alias names. The gaze of a generated
+  face is an example: its eyes are bones, so `lookLeft` plays `eyeLookOutLeft`
+  and `eyeLookInRight`.
+- "Is binary" and the overrides of the blinks and of the gaze apply.
+- A file with `blinkLeft` and `blinkRight` but without `blink` plays a blink on
+  the two sides.
+- Only the preset expressions play. Custom expressions of the file have no
+  weight in the mixer.
+- VRM4U keeps no bind weight for a VRM 1.0 file: each bind plays in full.
+
+A mesh without that data plays by the alias names of its morph targets.
 
 ## Example Project
 

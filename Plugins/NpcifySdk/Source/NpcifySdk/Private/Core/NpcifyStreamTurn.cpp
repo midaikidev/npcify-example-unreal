@@ -491,12 +491,24 @@ namespace Npcify
     {
         FStagingTimeline& Target = Payload->Timeline;
         Target.Duration = Timeline.Duration;
+        if (!Timeline.InitialVariant.empty())
+        {
+            Target.InitialVariant = Timeline.InitialVariant;
+        }
+        if (!Timeline.ActiveVariant.empty())
+        {
+            Target.ActiveVariant = Timeline.ActiveVariant;
+        }
         Target.Expressions = Timeline.Expressions;
         Target.Animations = Timeline.Animations;
         Target.Motions = Timeline.Motions;
         if (Timeline.Motion.bValid)
         {
             Target.Motion = Timeline.Motion;
+        }
+        if (!Timeline.ToolCalls.empty())
+        {
+            Target.ToolCalls = Timeline.ToolCalls;
         }
     }
 

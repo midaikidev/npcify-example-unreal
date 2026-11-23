@@ -111,8 +111,17 @@ void UNpcifyCharacterComponent::SendCreateConversationRequest(const FString& Fol
     }
     const std::string BaseUrl = Runtime->GetOptions().BaseUrl;
     const std::string Token = Runtime->GetOptions().ResolvedToken();
+    const std::string MemoryId = ResolveMemoryIdentifier();
     TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
     Body->SetStringField(TEXT("avatarId"), CharacterId);
+    if (MemoryId.empty())
+    {
+        Body->SetField(TEXT("memoryIdentifier"), MakeShared<FJsonValueNull>());
+    }
+    else
+    {
+        Body->SetStringField(TEXT("memoryIdentifier"), UTF8_TO_TCHAR(MemoryId.c_str()));
+    }
     if (WantsLiveMotion())
     {
         // This client plays live motion frames (docs/realtime-motion.md).
@@ -258,6 +267,7 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     }
     const std::string BaseUrl = Runtime->GetOptions().BaseUrl;
     const std::string Token = Runtime->GetOptions().ResolvedToken();
+    const std::string MemoryId = ResolveMemoryIdentifier();
     // Same JSON body as the Web and Unity SDKs; the response is NPCP.
     TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
     Body->SetStringField(TEXT("content"), Message);
@@ -266,6 +276,8 @@ void UNpcifyCharacterComponent::SendCreateStagingRequest(
     const FString ParentStagingId = UTF8_TO_TCHAR(Runtime->GetActiveStagingId().c_str());
     if (ParentStagingId.IsEmpty()) Body->SetField(TEXT("parentStagingId"), MakeShared<FJsonValueNull>());
     else Body->SetStringField(TEXT("parentStagingId"), ParentStagingId);
+    if (MemoryId.empty()) Body->SetField(TEXT("memoryIdentifier"), MakeShared<FJsonValueNull>());
+    else Body->SetStringField(TEXT("memoryIdentifier"), UTF8_TO_TCHAR(MemoryId.c_str()));
     // Always send the list: without it the server uses the capabilities of the conversation.
     TArray<TSharedPtr<FJsonValue>> Capabilities;
     if (bWithLiveMotion)

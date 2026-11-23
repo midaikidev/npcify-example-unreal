@@ -74,6 +74,10 @@ namespace Npcify
     public:
         static constexpr const char* MediaType = "application/vnd.npcify.performance";
         static constexpr const char* FileExtension = ".npcp";
+        static constexpr const char* DefaultVariantKey = "default";
+        static constexpr const char* NudeVariantKey = "nude";
+        static constexpr uint8_t MajorVersion = 1;
+        static constexpr uint8_t MinorVersion = 2;
         static constexpr size_t HeaderSize = 24;
         static constexpr size_t MaxBytes = 256 * 1024 * 1024;
         static constexpr int MaxDepth = 64;
@@ -83,6 +87,9 @@ namespace Npcify
         static constexpr size_t MaxArrayLength = 1000000;
         static constexpr size_t MaxMapLength = 10000;
         static constexpr int64_t MaxSafeInteger = 9007199254740991LL;
+
+        static bool IsValidVariantKey(const std::string& Key);
+        static std::string UrlEncode(const std::string& Input);
 
         static uint32_t Checksum(const uint8_t* Data, size_t Length);
         static uint32_t Checksum(const std::vector<uint8_t>& Bytes);
@@ -94,7 +101,8 @@ namespace Npcify
         static std::vector<uint8_t> EncodeNpcp(
             ENpcifyPerformanceKind Kind,
             const FNpcifyMsgPackValue& Value,
-            bool bCompress = false
+            bool bCompress = false,
+            uint8_t InMinorVersion = 0
         );
 
         static FNpcifyMsgPackValue DecodeNpcp(

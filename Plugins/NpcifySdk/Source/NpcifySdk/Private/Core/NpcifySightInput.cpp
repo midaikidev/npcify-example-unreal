@@ -11,7 +11,7 @@ namespace Npcify
 {
     namespace
     {
-        const char* const OffMessage = "Sight is off for this character. Its owner turns it on in the Sight tab.";
+        const char* const SightOffMessage = "Sight is off for this character. Its owner turns it on in the Sight tab.";
         const char* const BakedMessage = "Sight is not available in a baked (offline) conversation.";
         const char* const UnreadMessage = "Sight needs the character info: start a conversation first.";
     }
@@ -92,7 +92,7 @@ namespace Npcify
     void FNpcifySightInput::Configure(bool bEnabled, bool bBaked)
     {
         bDisabledByServer = false;
-        Unavailable = bBaked ? BakedMessage : bEnabled ? "" : OffMessage;
+        Unavailable = bBaked ? BakedMessage : bEnabled ? "" : SightOffMessage;
         if (!Unavailable.empty())
         {
             Stop();
@@ -421,7 +421,7 @@ namespace Npcify
         End(Session);
         if (Code == SightCodes::Disabled)
         {
-            Unavailable = OffMessage;
+            Unavailable = SightOffMessage;
             bDisabledByServer = true;
         }
         Publish(Code);

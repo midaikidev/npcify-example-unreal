@@ -1,5 +1,7 @@
 #include "NpcifyCharacterComponent.h"
 
+#include "Core/NpcifyApiClient.h"
+
 #include "AudioCapture.h"
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
@@ -218,6 +220,20 @@ void UNpcifyCharacterComponent::CheckInputModesWithCharacter(TFunction<void()> O
             Self->bLiveMotionInEffect = bRealtimeMotion;
             Self->bSpeechInputKnown = true;
             Self->bSpeechInputEnabled = bSpeechInput;
+            if (Self->Runtime.IsValid())
+            {
+                try
+                {
+                    const Npcify::FNpcifyAvatarInfo ParsedInfo = Npcify::FNpcifyApiClient::ParseAvatarInfo(
+                        TCHAR_TO_UTF8(*Response->GetContentAsString())
+                    );
+                    Self->Runtime->SetVariants(ParsedInfo.Variants);
+                    Self->Runtime->SetIdleAnimationId(ParsedInfo.IdleAnimationId);
+                }
+                catch (const std::exception&)
+                {
+                }
+            }
             try
             {
                 Self->CheckedInputModes =

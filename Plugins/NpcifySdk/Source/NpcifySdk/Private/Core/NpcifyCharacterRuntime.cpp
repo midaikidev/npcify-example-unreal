@@ -1,6 +1,7 @@
 #include "Core/NpcifyCharacterRuntime.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -13,6 +14,7 @@ namespace Npcify
         , Volume(InOptions.Volume)
         , bMuted(InOptions.bMuted)
     {
+        Options.MemoryIdentifier = FNpcifyOptions::NormalizeMemoryIdentifier(Options.MemoryIdentifier);
         StagingPlayer.OnDialogueBlockStarted = [this](const FStagingDialogueBlock& Block)
         {
             HandleDialogueBlockStarted(Block);
@@ -25,15 +27,74 @@ namespace Npcify
         {
             PlayAnimation(Clip.Animation, Clip.bLoop);
         };
+        StagingPlayer.OnToolCallTriggered = [this](const FNpcifyStagingToolCall& Call)
+        {
+            if (OnToolCall)
+            {
+                OnToolCall(Call);
+            }
+        };
+        StagingPlayer.OnVariantCue = [this](const std::string& VariantKey, const FNpcifyStagingToolCall*)
+        {
+            ApplyVariantCue(VariantKey);
+        };
         StagingPlayer.OnStagingCompleted = [this](const FStagingResultPayload& Staging)
         {
             HandleStagingCompleted(Staging);
         };
     }
 
+    void FNpcifyCharacterRuntime::SwitchVariant(const std::string& VariantKey)
+    {
+        if (!FNpcifyProtocol::IsValidVariantKey(VariantKey))
+        {
+            throw std::invalid_argument("Invalid variant key: " + VariantKey);
+        }
+        ApplyVariantCue(VariantKey);
+    }
+
+    void FNpcifyCharacterRuntime::SetVariants(std::vector<FNpcifyVariantSummary> InVariants)
+    {
+        Variants = std::move(InVariants);
+    }
+
+    FConversationWorldline FNpcifyCharacterRuntime::GetBakedWorldline() const
+    {
+        if (!BakedConversation)
+        {
+            throw std::runtime_error("No baked conversation is attached.");
+        }
+        return BakedConversation->Worldline(ConversationId);
+    }
+
+    void FNpcifyCharacterRuntime::ApplyVariantCue(const std::string& VariantKey)
+    {
+        const std::string Resolved = VariantKey.empty()
+            ? std::string(FNpcifyProtocol::DefaultVariantKey)
+            : VariantKey;
+        if (!FNpcifyProtocol::IsValidVariantKey(Resolved))
+        {
+            return;
+        }
+        if (ActiveVariant == Resolved)
+        {
+            return;
+        }
+        ActiveVariant = Resolved;
+        if (OnVariantChanged)
+        {
+            OnVariantChanged(ActiveVariant);
+        }
+    }
+
     void FNpcifyCharacterRuntime::SetVolume(float InVolume)
     {
         Volume = std::max(0.0f, std::min(1.0f, InVolume));
+    }
+
+    void FNpcifyCharacterRuntime::SetMemoryIdentifier(const std::string& InMemoryIdentifier)
+    {
+        Options.MemoryIdentifier = FNpcifyOptions::NormalizeMemoryIdentifier(InMemoryIdentifier);
     }
 
     FNpcifySpeechState FNpcifyCharacterRuntime::GetSpeechState() const
@@ -192,7 +253,28 @@ namespace Npcify
     {
         if (AnimationId.empty()) return;
         CurrentAnimation = AnimationId;
+        NoteAnimationStarted(AnimationId);
         if (OnAnimationPlayRequested) OnAnimationPlayRequested(AnimationId, bLoop);
+    }
+
+    void FNpcifyCharacterRuntime::NoteAnimationStarted(const std::string& AnimationId)
+    {
+        bool bIdle = AnimationId.size() == IdleAnimationId.size();
+        for (size_t Index = 0; bIdle && Index < AnimationId.size(); ++Index)
+        {
+            bIdle = std::tolower(static_cast<unsigned char>(AnimationId[Index])) ==
+                std::tolower(static_cast<unsigned char>(IdleAnimationId[Index]));
+        }
+        Expressions.RequestBlink(
+            AnimationId.empty() || bIdle ? FNpcifyIdleBlinks::IdleReturnBlinkChance : FNpcifyIdleBlinks::ActionBlinkChance);
+    }
+
+    void FNpcifyCharacterRuntime::SetIdleAnimationId(const std::string& AnimationId)
+    {
+        if (!AnimationId.empty())
+        {
+            IdleAnimationId = AnimationId;
+        }
     }
 
     void FNpcifyCharacterRuntime::LookAt(float YawDegrees, float PitchDegrees)
@@ -219,6 +301,13 @@ namespace Npcify
             DeltaTimeSeconds,
             Playing ? Playing->StagingId : std::string(),
             Playing ? StagingPlayer.GetTimeSeconds() : -1.0);
+        // The start of live motion is a new movement: it brings a blink as a new animation does.
+        const bool bShown = LiveMotion.GetWeight() > 0.0;
+        if (bShown && !bLiveMotionShown)
+        {
+            Expressions.RequestBlink(FNpcifyIdleBlinks::ActionBlinkChance);
+        }
+        bLiveMotionShown = bShown;
     }
 
     void FNpcifyCharacterRuntime::HandleDialogueBlockStarted(const FStagingDialogueBlock& Block)
@@ -361,7 +450,8 @@ namespace Npcify
 
     FNpcifyMsgPackValue FNpcifyCharacterRuntime::BuildCreateConversationRequest(
         const std::string& AvatarId,
-        const std::string& RenderSessionId
+        const std::string& RenderSessionId,
+        const std::string& MemoryIdentifier
     )
     {
         std::map<std::string, FNpcifyMsgPackValue> Body;
@@ -370,6 +460,10 @@ namespace Npcify
         {
             Body["renderSessionId"] = FNpcifyMsgPackValue::MakeString(RenderSessionId);
         }
+        const std::string NormalizedMemoryId = FNpcifyOptions::NormalizeMemoryIdentifier(MemoryIdentifier);
+        Body["memoryIdentifier"] = NormalizedMemoryId.empty()
+            ? FNpcifyMsgPackValue::MakeNull()
+            : FNpcifyMsgPackValue::MakeString(NormalizedMemoryId);
         return FNpcifyMsgPackValue::MakeMap(std::move(Body));
     }
 
@@ -377,7 +471,8 @@ namespace Npcify
         const std::string& Message,
         const std::string& ParentStagingId,
         bool bSilent,
-        int MaxOptions
+        int MaxOptions,
+        const std::string& MemoryIdentifier
     )
     {
         std::map<std::string, FNpcifyMsgPackValue> Body;
@@ -391,6 +486,10 @@ namespace Npcify
             Body["silent"] = FNpcifyMsgPackValue::MakeBool(true);
         }
         Body["maxOptions"] = FNpcifyMsgPackValue::MakeInt(std::max(1, MaxOptions));
+        const std::string NormalizedMemoryId = FNpcifyOptions::NormalizeMemoryIdentifier(MemoryIdentifier);
+        Body["memoryIdentifier"] = NormalizedMemoryId.empty()
+            ? FNpcifyMsgPackValue::MakeNull()
+            : FNpcifyMsgPackValue::MakeString(NormalizedMemoryId);
         return FNpcifyMsgPackValue::MakeMap(std::move(Body));
     }
 }

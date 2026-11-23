@@ -10,16 +10,80 @@ namespace Npcify
 {
     struct FNpcifyOptions
     {
+        static constexpr size_t MaxMemoryIdentifierLength = 128;
+
         std::string BaseUrl = "https://api.npcify.ai";
         std::string CharacterId;
         std::string ApiKey;
         std::string ApiToken;
+        /**
+         * Optional player memory identifier when SDK Player Memory is enabled on the character.
+         * Non-empty identifiers isolate memories per player; empty maps to the character owner's
+         * Dashboard -> Memory bucket.
+         */
+        std::string MemoryIdentifier;
         float Volume = 1.0f;
         bool bMuted = false;
 
         std::string ResolvedToken() const
         {
             return !ApiToken.empty() ? ApiToken : ApiKey;
+        }
+
+        static std::string NormalizeMemoryIdentifier(const std::string& Value)
+        {
+            std::string Cleaned;
+            Cleaned.reserve(Value.size());
+            for (unsigned char Ch : Value)
+            {
+                if (Ch > 0x1fU && Ch != 0x7fU)
+                {
+                    Cleaned.push_back(static_cast<char>(Ch));
+                }
+            }
+            const auto IsSpace = [](unsigned char Ch)
+            {
+                return Ch == ' ' || Ch == '\t' || Ch == '\n' || Ch == '\r' || Ch == '\f' || Ch == '\v';
+            };
+            size_t Start = 0;
+            while (Start < Cleaned.size() && IsSpace(static_cast<unsigned char>(Cleaned[Start])))
+            {
+                ++Start;
+            }
+            size_t End = Cleaned.size();
+            while (End > Start && IsSpace(static_cast<unsigned char>(Cleaned[End - 1])))
+            {
+                --End;
+            }
+            if (Start >= End)
+            {
+                return std::string();
+            }
+            std::string Trimmed = Cleaned.substr(Start, End - Start);
+            // Truncate on UTF-8 code point boundaries up to MaxMemoryIdentifierLength code points.
+            size_t BytePos = 0;
+            size_t CodePoints = 0;
+            while (BytePos < Trimmed.size() && CodePoints < MaxMemoryIdentifierLength)
+            {
+                const unsigned char Lead = static_cast<unsigned char>(Trimmed[BytePos]);
+                size_t Step = 1;
+                if ((Lead & 0x80U) == 0U) Step = 1;
+                else if ((Lead & 0xE0U) == 0xC0U) Step = 2;
+                else if ((Lead & 0xF0U) == 0xE0U) Step = 3;
+                else if ((Lead & 0xF8U) == 0xF0U) Step = 4;
+                if (BytePos + Step > Trimmed.size())
+                {
+                    break;
+                }
+                BytePos += Step;
+                ++CodePoints;
+            }
+            Trimmed.resize(BytePos);
+            while (!Trimmed.empty() && IsSpace(static_cast<unsigned char>(Trimmed.back())))
+            {
+                Trimmed.pop_back();
+            }
+            return Trimmed;
         }
     };
 
@@ -115,15 +179,72 @@ namespace Npcify
         std::vector<uint8_t> FramesData;
     };
 
+    struct FNpcifyVariantSummary
+    {
+        std::string Key = FNpcifyProtocol::DefaultVariantKey;
+        std::string Label;
+        std::string Description;
+        bool bR18 = false;
+        std::string PortraitUrl;
+        std::string CreditText;
+    };
+
+    struct FNpcifyStagingToolCallResult
+    {
+        bool bOk = false;
+        std::string Status = "applied";
+        std::string PreviousVariant = FNpcifyProtocol::DefaultVariantKey;
+        std::string ActiveVariant = FNpcifyProtocol::DefaultVariantKey;
+        std::string Error;
+    };
+
+    struct FNpcifyStagingToolCall
+    {
+        std::string Id;
+        std::string Name = "switch_variant";
+        double Timestamp = 0.0;
+        std::string Variant = FNpcifyProtocol::DefaultVariantKey;
+        FNpcifyStagingToolCallResult Result;
+    };
+
+    struct FNpcifyAvatarAnimationInfo
+    {
+        std::string Id;
+        std::string Name;
+        bool bLoop = false;
+    };
+
+    struct FNpcifyAvatarInfo
+    {
+        std::string Id;
+        std::string Name;
+        std::string IdleAnimationId = "idle";
+        bool bAllowCustomReply = true;
+        bool bSpeechInputEnabled = false;
+        bool bBakedConversationEnabled = false;
+        int BakedConversationRevision = 0;
+        bool bRealtimeMotionEnabled = false;
+        bool bSightEnabled = false;
+        std::string SightProvider;
+        bool bSdkMemoryEnabled = false;
+        std::vector<FNpcifyAvatarAnimationInfo> Animations;
+        std::vector<FNpcifyVariantSummary> Variants;
+    };
+
     struct FStagingTimeline
     {
         double Duration = 0.0;
+        std::string InitialVariant;
+        std::string ActiveVariant;
         std::vector<FStagingDialogueBlock> Dialogue;
         std::vector<FStagingExpressionClip> Expressions;
         std::vector<FStagingAnimationClip> Animations;
         std::vector<FStagingMotionPrompt> Motions;
         FStagingMotionTrack Motion;
+        std::vector<FNpcifyStagingToolCall> ToolCalls;
     };
+
+    using FNpcifyStagingTimeline = FStagingTimeline;
 
     struct FStagingReplyOption
     {
@@ -177,7 +298,12 @@ namespace Npcify
         std::string Text;
         std::vector<FStagingReplyOption> Options;
         std::string CreatedAt = "1970-01-01T00:00:00.000Z";
+        std::string InitialVariant;
+        std::string ActiveVariant;
+        std::vector<FNpcifyStagingToolCall> ToolCalls;
     };
+
+    using FNpcifyWorldlineStaging = FConversationWorldlineNode;
 
     struct FConversationWorldline
     {
@@ -220,6 +346,10 @@ namespace Npcify
         static FStagingResultPayload MapStagingResultPayload(const FNpcifyMsgPackValue& MapVal);
         static FStagingTimeline MapTimeline(const FNpcifyMsgPackValue& MapVal);
         static FStagingDialogueBlock MapDialogueBlock(const FNpcifyMsgPackValue& MapVal);
+        static FNpcifyStagingToolCall MapToolCall(const FNpcifyMsgPackValue& MapVal);
+        static FNpcifyMsgPackValue ToolCallToMsgPack(const FNpcifyStagingToolCall& Call);
+        static FNpcifyAvatarInfo MapAvatarInfo(const FNpcifyMsgPackValue& MapVal);
+        static FConversationWorldline MapWorldline(const FNpcifyMsgPackValue& MapVal);
         static FBakedConversationAsset MapBakedConversationAsset(const FNpcifyMsgPackValue& MapVal);
         static FNpcifyMsgPackValue ToMsgPack(const FStagingResultPayload& Payload);
     };

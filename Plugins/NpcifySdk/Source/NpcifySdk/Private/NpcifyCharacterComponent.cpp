@@ -1,4 +1,5 @@
 #include "NpcifyCharacterComponent.h"
+#include "NpcifyVrmExpressions.h"
 
 #include "NpcifyConversationSocket.h"
 #include "NpcifyMp3Decoder.h"
@@ -57,6 +58,23 @@ void UNpcifyCharacterComponent::TickComponent(
     TickSight();
     UpdateGazeLayer();
     UpdateLiveMotion(DeltaTime);
+    if (bAutoBlink)
+    {
+        // A fast turn of the head brings a blink. The pose is the one of the last animation update.
+        const USkeletalMeshComponent* PrimaryMesh = GetSkeletalMeshComponent();
+        const TObjectKey<USkeletalMesh> HeadMesh(PrimaryMesh ? PrimaryMesh->GetSkeletalMeshAsset() : nullptr);
+        if (HeadMesh != TrackedHeadMesh)
+        {
+            TrackedHeadMesh = HeadMesh;
+            Runtime->GetExpressions().GetIdleBlinks().RestartHead();
+        }
+        const FQuat Head = GetBoneTransform(HeadBoneName).GetRotation();
+        Runtime->GetExpressions().TrackHead(
+            static_cast<float>(Head.X),
+            static_cast<float>(Head.Y),
+            static_cast<float>(Head.Z),
+            static_cast<float>(Head.W));
+    }
     Runtime->Tick(static_cast<double>(DeltaTime), 0.0f);
     ApplyMorphTargets();
 }
@@ -71,6 +89,27 @@ void UNpcifyCharacterComponent::Configure(
     CharacterId = InCharacterId;
     ApiKey = InApiKey;
     RebuildRuntime();
+}
+
+void UNpcifyCharacterComponent::SetMemoryIdentifier(const FString& InMemoryIdentifier)
+{
+    const std::string Normalized = Npcify::FNpcifyOptions::NormalizeMemoryIdentifier(TCHAR_TO_UTF8(*InMemoryIdentifier));
+    MemoryIdentifier = UTF8_TO_TCHAR(Normalized.c_str());
+    LastSyncedMemoryIdentifier = MemoryIdentifier;
+    if (Runtime.IsValid())
+    {
+        Runtime->SetMemoryIdentifier(Normalized);
+    }
+}
+
+FString UNpcifyCharacterComponent::GetMemoryIdentifier() const
+{
+    if (Runtime.IsValid() && MemoryIdentifier == LastSyncedMemoryIdentifier)
+    {
+        return UTF8_TO_TCHAR(Runtime->GetMemoryIdentifier().c_str());
+    }
+    const std::string Normalized = Npcify::FNpcifyOptions::NormalizeMemoryIdentifier(TCHAR_TO_UTF8(*MemoryIdentifier));
+    return UTF8_TO_TCHAR(Normalized.c_str());
 }
 
 bool UNpcifyCharacterComponent::ConfigureFromJson(const FString& ConfigJson)
@@ -89,6 +128,13 @@ bool UNpcifyCharacterComponent::ConfigureFromJson(const FString& ConfigJson)
     }
     JsonObject->TryGetStringField(TEXT("characterId"), CharacterId);
     JsonObject->TryGetStringField(TEXT("apiKey"), ApiKey);
+    FString ParsedMemoryIdentifier;
+    if (JsonObject->TryGetStringField(TEXT("memoryIdentifier"), ParsedMemoryIdentifier))
+    {
+        MemoryIdentifier = UTF8_TO_TCHAR(
+            Npcify::FNpcifyOptions::NormalizeMemoryIdentifier(TCHAR_TO_UTF8(*ParsedMemoryIdentifier)).c_str()
+        );
+    }
     TArray<FString> ModeNames;
     if (JsonObject->TryGetStringArrayField(TEXT("inputModes"), ModeNames))
     {
@@ -342,6 +388,18 @@ void UNpcifyCharacterComponent::PlayAnimation(const FString& AnimationId, bool b
     Runtime->PlayAnimation(TCHAR_TO_UTF8(*AnimationId), bLoop);
 }
 
+void UNpcifyCharacterComponent::NoteAnimationStarted(const FString& AnimationId)
+{
+    EnsureInitialized();
+    Runtime->NoteAnimationStarted(TCHAR_TO_UTF8(*AnimationId));
+}
+
+bool UNpcifyCharacterComponent::RequestBlink(float Chance)
+{
+    EnsureInitialized();
+    return Runtime->GetExpressions().RequestBlink(Chance);
+}
+
 void UNpcifyCharacterComponent::LookAtActor(AActor* TargetActor)
 {
     EnsureInitialized();
@@ -399,12 +457,27 @@ TArray<FString> UNpcifyCharacterComponent::GetCurrentReplyOptions() const
 Npcify::FNpcifyCharacterRuntime& UNpcifyCharacterComponent::GetRuntime() { EnsureInitialized(); return *Runtime; }
 void UNpcifyCharacterComponent::EnsureInitialized() { if (!Runtime.IsValid()) RebuildRuntime(); }
 
+std::string UNpcifyCharacterComponent::ResolveMemoryIdentifier()
+{
+    EnsureInitialized();
+    if (MemoryIdentifier != LastSyncedMemoryIdentifier)
+    {
+        const std::string Normalized = Npcify::FNpcifyOptions::NormalizeMemoryIdentifier(TCHAR_TO_UTF8(*MemoryIdentifier));
+        MemoryIdentifier = UTF8_TO_TCHAR(Normalized.c_str());
+        LastSyncedMemoryIdentifier = MemoryIdentifier;
+        Runtime->SetMemoryIdentifier(Normalized);
+    }
+    return Runtime->GetMemoryIdentifier();
+}
+
 void UNpcifyCharacterComponent::RebuildRuntime()
 {
     Npcify::FNpcifyOptions Opts;
     Opts.BaseUrl = TCHAR_TO_UTF8(*(Endpoint.IsEmpty() ? TEXT("https://api.npcify.ai") : Endpoint));
     Opts.CharacterId = TCHAR_TO_UTF8(*CharacterId);
     Opts.ApiKey = TCHAR_TO_UTF8(*ApiKey);
+    Opts.MemoryIdentifier = Npcify::FNpcifyOptions::NormalizeMemoryIdentifier(TCHAR_TO_UTF8(*MemoryIdentifier));
+    LastSyncedMemoryIdentifier = MemoryIdentifier;
 
     Runtime = MakeUnique<Npcify::FNpcifyCharacterRuntime>(Opts);
     Runtime->GetExpressions().bAutoBlinkEnabled = bAutoBlink;
@@ -440,6 +513,14 @@ void UNpcifyCharacterComponent::RebuildRuntime()
     Runtime->OnAnimationPlayRequested = [this](const std::string& AnimId, bool bLoop)
     {
         OnAnimationRequested.Broadcast(UTF8_TO_TCHAR(AnimId.c_str()), bLoop);
+    };
+    Runtime->OnVariantChanged = [this](const std::string& VariantKey)
+    {
+        HandleVariantChanged(UTF8_TO_TCHAR(VariantKey.c_str()));
+    };
+    Runtime->OnToolCall = [this](const Npcify::FNpcifyStagingToolCall& Call)
+    {
+        HandleToolCall(Call);
     };
     Runtime->OnAudioBlock = [this](const Npcify::FStagingDialogueBlock& Block, const Npcify::FNpcifyDecodedAudio& Audio)
     {
@@ -481,14 +562,29 @@ void UNpcifyCharacterComponent::ApplyMorphTargets()
         if (!IsValid(MeshComp)) continue;
         USkeletalMesh* SkelMesh = MeshComp->GetSkeletalMeshAsset();
         if (!IsValid(SkelMesh)) continue;
-        for (const UMorphTarget* Morph : SkelMesh->GetMorphTargets())
+        const auto& Morphs = SkelMesh->GetMorphTargets();
+        FMorphTargetPlan* Entry = MorphTargetPlans.Find(TObjectKey<USkeletalMesh>(SkelMesh));
+        if (!Entry || Entry->Names.Num() != Morphs.Num())
         {
-            if (!IsValid(Morph)) continue;
-            const FName MorphName = Morph->GetFName();
-            const float Weight = Runtime->GetExpressions().ResolveMorphTargetWeight01(
-                TCHAR_TO_UTF8(*MorphName.ToString())
-            );
-            MeshComp->SetMorphTarget(MorphName, Weight);
+            FMorphTargetPlan Made;
+            std::vector<std::string> Names;
+            for (const UMorphTarget* Morph : Morphs)
+            {
+                const FName MorphName = IsValid(Morph) ? Morph->GetFName() : NAME_None;
+                Made.Names.Add(MorphName);
+                Names.push_back(TCHAR_TO_UTF8(*MorphName.ToString()));
+            }
+            // With the expressions of the VRM file, each expression plays the morph targets
+            // that the file binds to it; without them, the alias names of the morph targets.
+            Made.Plan = Npcify::FNpcifyMorphTargetPlan(Names, ReadNpcifyVrmExpressions(SkelMesh, Made.Names));
+            Entry = &MorphTargetPlans.Add(TObjectKey<USkeletalMesh>(SkelMesh), MoveTemp(Made));
+        }
+        for (int32 Index = 0; Index < Entry->Names.Num(); ++Index)
+        {
+            if (Entry->Names[Index].IsNone()) continue;
+            MeshComp->SetMorphTarget(
+                Entry->Names[Index],
+                Entry->Plan.GetWeight(static_cast<size_t>(Index), Runtime->GetExpressions()));
         }
     }
 }

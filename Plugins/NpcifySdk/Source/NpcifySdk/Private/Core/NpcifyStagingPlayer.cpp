@@ -1,3 +1,5 @@
+#include "Core/NpcifyStagingPlayer.h"
+
 #include "Core/NpcifyCharacterRuntime.h"
 
 #include <algorithm>
@@ -19,6 +21,17 @@ namespace Npcify
             char Start[32];
             std::snprintf(Start, sizeof(Start), "%.3f", StartTime);
             return Name + ":" + Start;
+        }
+
+        std::string ToolCallKey(const FNpcifyStagingToolCall& Call)
+        {
+            if (!Call.Id.empty())
+            {
+                return Call.Id;
+            }
+            char Ts[32];
+            std::snprintf(Ts, sizeof(Ts), "%.3f", Call.Timestamp);
+            return Call.Name + ":" + Call.Variant + ":" + Ts;
         }
     }
 
@@ -118,6 +131,7 @@ namespace Npcify
                 PlayedAnimations.Add(Clip.Id, Clip.Animation, Clip.StartTime, Clip.EndTime, false);
             }
         }
+        DispatchDueToolCalls(Timeline, CurrentTimeSeconds);
     }
 
     void FNpcifyStagingPlayer::Start(
@@ -137,6 +151,18 @@ namespace Npcify
         CurrentText = ActiveStaging->Text;
         RevealedText.clear();
         RecomputeDuration();
+        const std::shared_ptr<const FStagingResultPayload> StartedStaging = ActiveStaging;
+        const std::string InitialVariant = StartedStaging->Timeline.InitialVariant.empty()
+            ? std::string(FNpcifyProtocol::DefaultVariantKey)
+            : StartedStaging->Timeline.InitialVariant;
+        if (OnVariantCue)
+        {
+            OnVariantCue(InitialVariant, nullptr);
+        }
+        if (ActiveStaging != StartedStaging)
+        {
+            return;
+        }
         Tick(0.0);
     }
 
@@ -148,7 +174,55 @@ namespace Npcify
         for (const auto& B : Timeline.Dialogue) ComputedEnd = std::max(ComputedEnd, BlockEnd(B));
         for (const auto& E : Timeline.Expressions) ComputedEnd = std::max(ComputedEnd, E.EndTime);
         for (const auto& A : Timeline.Animations) ComputedEnd = std::max(ComputedEnd, A.EndTime);
+        for (const auto& Call : Timeline.ToolCalls) ComputedEnd = std::max(ComputedEnd, Call.Timestamp);
         TotalDurationSeconds = std::max(0.01, ComputedEnd);
+    }
+
+    void FNpcifyStagingPlayer::DispatchDueToolCalls(const FStagingTimeline& Timeline, double ElapsedSeconds)
+    {
+        if (Timeline.ToolCalls.empty())
+        {
+            return;
+        }
+        std::vector<size_t> Order(Timeline.ToolCalls.size());
+        for (size_t Index = 0; Index < Order.size(); ++Index)
+        {
+            Order[Index] = Index;
+        }
+        std::stable_sort(Order.begin(), Order.end(), [&Timeline](size_t A, size_t B)
+        {
+            return Timeline.ToolCalls[A].Timestamp < Timeline.ToolCalls[B].Timestamp;
+        });
+
+        const std::shared_ptr<const FStagingResultPayload> GuardStaging = ActiveStaging;
+        for (size_t Index : Order)
+        {
+            const FNpcifyStagingToolCall Call = Timeline.ToolCalls[Index];
+            if (Call.Timestamp > ElapsedSeconds + 1e-6)
+            {
+                break;
+            }
+            if (!AppliedToolCallIds.insert(ToolCallKey(Call)).second)
+            {
+                continue;
+            }
+            if (OnToolCallTriggered)
+            {
+                OnToolCallTriggered(Call);
+            }
+            if (ActiveStaging != GuardStaging)
+            {
+                return;
+            }
+            if (Call.Name == "switch_variant" && Call.Result.bOk && !Call.Result.ActiveVariant.empty() && OnVariantCue)
+            {
+                OnVariantCue(Call.Result.ActiveVariant, &Call);
+                if (ActiveStaging != GuardStaging)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     double FNpcifyStagingPlayer::AvailableEnd() const
@@ -277,6 +351,7 @@ namespace Npcify
         bWaiting = false;
         PlayedExpressions.Clear();
         PlayedAnimations.Clear();
+        AppliedToolCallIds.clear();
         VisemePlayer.Clear();
         FacialMixer.ClearVisemes();
     }
@@ -322,6 +397,7 @@ namespace Npcify
                 if (OnAnimationClipTriggered) OnAnimationClipTriggered(Clip);
             }
         }
+        DispatchDueToolCalls(Timeline, CurrentTimeSeconds);
         if (ActiveStaging != Staging)
         {
             return;
@@ -418,6 +494,19 @@ namespace Npcify
         if (bDialogueComplete && ActiveBlockIndex < 0 && CurrentTimeSeconds >= TotalDurationSeconds && AllBlocksStarted())
         {
             const FStagingResultPayload Completed = *Staging;
+            DispatchDueToolCalls(Completed.Timeline, CurrentTimeSeconds);
+            if (ActiveStaging != Staging)
+            {
+                return;
+            }
+            if (!Completed.Timeline.ActiveVariant.empty() && OnVariantCue)
+            {
+                OnVariantCue(Completed.Timeline.ActiveVariant, nullptr);
+                if (ActiveStaging != Staging)
+                {
+                    return;
+                }
+            }
             RevealedText = Completed.Text;
             Stop();
             if (OnStagingCompleted) OnStagingCompleted(Completed);

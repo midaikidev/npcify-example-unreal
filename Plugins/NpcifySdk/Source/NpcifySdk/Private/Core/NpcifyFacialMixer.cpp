@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <utility>
 
 namespace Npcify
 {
@@ -30,6 +31,26 @@ namespace Npcify
             "blink", "blinkLeft", "blinkRight",
             "lookUp", "lookDown", "lookLeft", "lookRight"
         };
+
+        constexpr size_t BlinkIndex = 11;
+        constexpr size_t BlinkLeftIndex = 12;
+        constexpr size_t BlinkRightIndex = 13;
+        constexpr size_t LookUpIndex = 14;
+
+        bool IsBlinkIndex(size_t Index)
+        {
+            return Index >= BlinkIndex && Index <= BlinkRightIndex;
+        }
+
+        bool IsLookIndex(size_t Index)
+        {
+            return Index >= LookUpIndex && Index < NpcifyExpressionCount;
+        }
+
+        float ClampUnit(float Value)
+        {
+            return Value < 0.0f ? 0.0f : (Value > 1.0f ? 1.0f : Value);
+        }
 
         bool IsVisemeKey(const std::string& Key)
         {
@@ -110,6 +131,12 @@ namespace Npcify
     }
 
     FNpcifyFacialMixer::FNpcifyFacialMixer()
+        : FNpcifyFacialMixer(std::function<double()>())
+    {
+    }
+
+    FNpcifyFacialMixer::FNpcifyFacialMixer(std::function<double()> BlinkRandom)
+        : IdleBlinks(std::move(BlinkRandom))
     {
         Layers[ENpcifyExpressionLayer::Emotion] = {};
         Layers[ENpcifyExpressionLayer::Viseme] = {};
@@ -118,6 +145,7 @@ namespace Npcify
         for (const char* Key : CanonicalList)
         {
             SmoothedWeights[Key] = 0.0f;
+            AppliedWeights[Key] = 0.0f;
         }
     }
 
@@ -145,11 +173,75 @@ namespace Npcify
         return Name;
     }
 
+    size_t FNpcifyFacialMixer::ExpressionIndex(const std::string& Name)
+    {
+        if (ToLowerAscii(Name).empty())
+        {
+            return NpcifyExpressionCount;
+        }
+        const std::string Canonical = NormalizeExpressionName(Name);
+        for (size_t Index = 0; Index < NpcifyExpressionCount; ++Index)
+        {
+            if (Canonical == CanonicalList[Index])
+            {
+                return Index;
+            }
+        }
+        return NpcifyExpressionCount;
+    }
+
+    size_t FNpcifyFacialMixer::PresetIndex(const std::string& Name)
+    {
+        // The VRM 0 preset names with the index of their VRM 1 preset.
+        static const std::pair<const char*, size_t> Vrm0Presets[] = {
+            {"joy", 1}, {"sorrow", 3}, {"fun", 4},
+            {"a", 6}, {"i", 7}, {"u", 8}, {"e", 9}, {"o", 10},
+            {"blink_l", 12}, {"blink_r", 13},
+        };
+        const std::string Lower = ToLowerAscii(Name);
+        for (size_t Index = 0; Index < NpcifyExpressionCount; ++Index)
+        {
+            if (Lower == ToLowerAscii(CanonicalList[Index]))
+            {
+                return Index;
+            }
+        }
+        for (const auto& Preset : Vrm0Presets)
+        {
+            if (Lower == Preset.first)
+            {
+                return Preset.second;
+            }
+        }
+        return NpcifyExpressionCount;
+    }
+
+    void FNpcifyFacialMixer::StoreAppliedList()
+    {
+        for (size_t Index = 0; Index < NpcifyExpressionCount; ++Index)
+        {
+            AppliedList[Index] = AppliedWeights[CanonicalList[Index]];
+        }
+    }
+
     float FNpcifyFacialMixer::GetWeight(const std::string& ExpressionName) const
     {
         const std::string Canonical = NormalizeExpressionName(ExpressionName);
-        auto It = SmoothedWeights.find(Canonical);
-        return It != SmoothedWeights.end() ? It->second : 0.0f;
+        auto It = AppliedWeights.find(Canonical);
+        return It != AppliedWeights.end() ? It->second : 0.0f;
+    }
+
+    bool FNpcifyFacialMixer::RequestBlink(float Chance)
+    {
+        return bAutoBlinkEnabled && IdleBlinks.RequestBlink(Clock, Chance);
+    }
+
+    void FNpcifyFacialMixer::TrackHead(float X, float Y, float Z, float W)
+    {
+        if (bAutoBlinkEnabled)
+        {
+            IdleBlinks.TrackHead(Clock, X, Y, Z, W);
+        }
     }
 
     float FNpcifyFacialMixer::GetMouthOpenness() const
@@ -257,6 +349,10 @@ namespace Npcify
         Layer["lookLeft"] = Clamp01(-YawDegrees / SafeMaxYaw);
         Layer["lookUp"] = Clamp01(PitchDegrees / SafeMaxPitch);
         Layer["lookDown"] = Clamp01(-PitchDegrees / SafeMaxPitch);
+        // A fast and large shift of the eyes brings a blink.
+        WatchGaze(
+            std::max(-SafeMaxYaw, std::min(SafeMaxYaw, YawDegrees)),
+            std::max(-SafeMaxPitch, std::min(SafeMaxPitch, PitchDegrees)));
     }
 
     void FNpcifyFacialMixer::SetGazeDirection(
@@ -284,6 +380,7 @@ namespace Npcify
     void FNpcifyFacialMixer::ClearGaze()
     {
         Layers[ENpcifyExpressionLayer::Gaze].clear();
+        WatchGaze(0.0f, 0.0f);
     }
 
     void FNpcifyFacialMixer::Reset()
@@ -297,12 +394,19 @@ namespace Npcify
         {
             Pair.second = 0.0f;
         }
+        for (auto& Pair : AppliedWeights)
+        {
+            Pair.second = 0.0f;
+        }
+        AppliedList.fill(0.0f);
+        IdleBlinks.Reset();
+        IdleBlink = 0.0f;
     }
 
     void FNpcifyFacialMixer::Update(float DeltaTimeSeconds)
     {
         const float Dt = std::max(0.0f, DeltaTimeSeconds);
-        UpdateAutoBlink(Dt);
+        Clock += Dt;
 
         std::map<std::string, float> CueTargets;
         for (int i = static_cast<int>(ActiveCues.size()) - 1; i >= 0; --i)
@@ -330,7 +434,7 @@ namespace Npcify
             }
         }
 
-        const float Alpha = Dt <= 0.0f ? 1.0f : Clamp01(1.0f - std::exp(-SmoothingRate * Dt));
+        std::map<std::string, float> Targets;
         for (auto& Pair : SmoothedWeights)
         {
             float Target = 0.0f;
@@ -347,16 +451,29 @@ namespace Npcify
             {
                 Target = CueIt->second;
             }
-
-            if ((Pair.first == "blink" || Pair.first == "blinkLeft" || Pair.first == "blinkRight") &&
-                SmoothedWeights["happy"] > 0.5f)
-            {
-                Target *= (1.0f - (SmoothedWeights["happy"] - 0.5f) * 1.6f);
-            }
-
-            const float Next = Pair.second + (Target - Pair.second) * Alpha;
-            Pair.second = Next < 0.0005f ? 0.0f : Clamp01(Next);
+            Targets[Pair.first] = Target;
         }
+        UpdateIdleBlink(Targets);
+
+        // The blink plays in full with every emotion. A generated face plays happy here with the
+        // mouth smile only and surprised not at all (the alias table does not know the names of
+        // its emotion shapes), so the emotion does not close the lids and the blink must. A face
+        // with its own happy shape adds the blink to it, as its VRM file tells the Web SDK.
+        const float Alpha = Dt <= 0.0f ? 1.0f : Clamp01(1.0f - std::exp(-SmoothingRate * Dt));
+        for (auto& Pair : SmoothedWeights)
+        {
+            const float Target = Targets[Pair.first];
+            const float Next = Pair.second + (Target - Pair.second) * Alpha;
+            // A weight within 0.001 of its target takes the target (the rule of the Web SDK).
+            Pair.second = std::fabs(Next - Target) < 0.001f ? Clamp01(Target) : Clamp01(Next);
+            AppliedWeights[Pair.first] = Pair.second;
+        }
+        // The idle blink has its own curve: it is not smoothed.
+        if (IdleBlink > AppliedWeights["blink"])
+        {
+            AppliedWeights["blink"] = IdleBlink;
+        }
+        StoreAppliedList();
     }
 
     float FNpcifyFacialMixer::ResolveMorphTargetWeight01(const std::string& MorphTargetName) const
@@ -374,50 +491,232 @@ namespace Npcify
         return GetWeight(Canonical);
     }
 
-    void FNpcifyFacialMixer::UpdateAutoBlink(float Dt)
+    void FNpcifyFacialMixer::UpdateIdleBlink(const std::map<std::string, float>& Targets)
     {
-        auto& BlinkLayer = Layers[ENpcifyExpressionLayer::Blink];
-        if (!bAutoBlinkEnabled)
+        // A blink expression that a cue, the emotion or a layer drives holds the idle blink: a
+        // blink that is due is skipped, and a blink that plays ends.
+        bool bHeld = !bAutoBlinkEnabled;
+        for (const char* Key : {"blink", "blinkLeft", "blinkRight"})
         {
-            BlinkLayer.clear();
-            bIsBlinking = false;
-            return;
+            auto It = Targets.find(Key);
+            bHeld = bHeld || (It != Targets.end() && It->second > 0.0f);
         }
-        BlinkTimer += Dt;
-        if (!bIsBlinking)
+        const bool bSpeaking = !Layers[ENpcifyExpressionLayer::Viseme].empty();
+        const double Weight = IdleBlinks.Sample(Clock, bHeld, bSpeaking);
+        IdleBlink = bHeld ? 0.0f : Clamp01(static_cast<float>(Weight));
+    }
+
+    void FNpcifyFacialMixer::WatchGaze(float YawDegrees, float PitchDegrees)
+    {
+        if (bAutoBlinkEnabled)
         {
-            if (BlinkTimer >= NextBlinkInterval)
-            {
-                bIsBlinking = true;
-                BlinkTimer = 0.0f;
-            }
-            BlinkLayer["blink"] = 0.0f;
-        }
-        else
-        {
-            const float T = BlinkTimer / std::max(0.05f, BlinkDuration);
-            if (T >= 1.0f)
-            {
-                bIsBlinking = false;
-                BlinkTimer = 0.0f;
-                NextBlinkInterval = 2.4f + NextRandom01() * 3.4f;
-                BlinkLayer["blink"] = 0.0f;
-            }
-            else
-            {
-                BlinkLayer["blink"] = Clamp01(static_cast<float>(std::sin(T * PiValue)));
-            }
+            IdleBlinks.WatchGaze(Clock, YawDegrees, PitchDegrees);
         }
     }
 
-    float FNpcifyFacialMixer::NextRandom01()
+    FNpcifyMorphTargetPlan::FNpcifyMorphTargetPlan(const std::vector<std::string>& InNames)
+        : Names(InNames), Roles(InNames.size(), ERole::Other)
     {
-        RngState += 0x6D2B79F5u;
-        uint32_t Z = RngState;
-        Z = (Z ^ (Z >> 15)) * (Z | 1u);
-        Z ^= Z + (Z ^ (Z >> 7)) * (Z | 61u);
-        Z ^= Z >> 14;
-        return (Z & 0xFFFFFFu) / static_cast<float>(0x1000000u);
+        bHasBoth = Choose({"blink", "fcl_eye_close"}, ERole::Both);
+        Choose({"blinkleft", "blink_l", "fcl_eye_close_l", "eyeblinkleft"}, ERole::Left);
+        Choose({"blinkright", "blink_r", "fcl_eye_close_r", "eyeblinkright"}, ERole::Right);
+        AliasExpressions.reserve(Names.size());
+        for (const std::string& Name : Names)
+        {
+            AliasExpressions.push_back(FNpcifyFacialMixer::ExpressionIndex(Name));
+        }
+    }
+
+    FNpcifyMorphTargetPlan::FNpcifyMorphTargetPlan(
+        const std::vector<std::string>& InNames,
+        const std::vector<FNpcifyVrmExpression>& Expressions)
+        : FNpcifyMorphTargetPlan(InNames)
+    {
+        Bound.resize(Names.size());
+        for (const FNpcifyVrmExpression& Expression : Expressions)
+        {
+            // The mixer plays the presets only: a custom expression of the file has no weight.
+            const size_t Index = FNpcifyFacialMixer::PresetIndex(Expression.Name);
+            if (Index >= NpcifyExpressionCount)
+            {
+                continue;
+            }
+            bHasExpressions = true;
+            FRule& Rule = Rules[Index];
+            Rule.bDefined = true;
+            Rule.bIsBinary = Rule.bIsBinary || Expression.bIsBinary;
+            Rule.bBound = Rule.bBound || Expression.bBoundOnOtherMesh;
+            if (Expression.OverrideBlink != ENpcifyExpressionOverride::None)
+            {
+                Rule.OverrideBlink = Expression.OverrideBlink;
+            }
+            if (Expression.OverrideLookAt != ENpcifyExpressionOverride::None)
+            {
+                Rule.OverrideLookAt = Expression.OverrideLookAt;
+            }
+            for (const FNpcifyExpressionBind& Bind : Expression.Binds)
+            {
+                // A bind on a target that the mesh does not have still makes the expression a
+                // bound one: the file binds it, so the alias names do not play it.
+                Rule.bBound = true;
+                if (Bind.MorphIndex < Names.size())
+                {
+                    Bound[Bind.MorphIndex].push_back({Index, ClampUnit(Bind.Weight)});
+                }
+            }
+        }
+        for (size_t Index = 0; Index < NpcifyExpressionCount; ++Index)
+        {
+            const FRule& Rule = Rules[Index];
+            const bool bOverridesBlink = Rule.OverrideBlink != ENpcifyExpressionOverride::None && !IsBlinkIndex(Index);
+            const bool bOverridesLook = Rule.OverrideLookAt != ENpcifyExpressionOverride::None && !IsLookIndex(Index);
+            bHasOverrides = bHasOverrides || bOverridesBlink || bOverridesLook;
+        }
+    }
+
+    bool FNpcifyMorphTargetPlan::Choose(const std::vector<const char*>& Aliases, ERole Role)
+    {
+        // Gives the best target of these names the role and mutes the other targets of them.
+        size_t Best = Names.size();
+        size_t BestRank = Aliases.size();
+        for (size_t Index = 0; Index < Names.size(); ++Index)
+        {
+            const std::string Lower = ToLowerAscii(Names[Index]);
+            for (size_t Rank = 0; Rank < Aliases.size(); ++Rank)
+            {
+                if (Lower == Aliases[Rank])
+                {
+                    Roles[Index] = ERole::Muted;
+                    if (Rank < BestRank)
+                    {
+                        Best = Index;
+                        BestRank = Rank;
+                    }
+                    break;
+                }
+            }
+        }
+        if (Best == Names.size())
+        {
+            return false;
+        }
+        Roles[Best] = Role;
+        return true;
+    }
+
+    float FNpcifyMorphTargetPlan::GetWeight(size_t Index, const FNpcifyFacialMixer& Mixer) const
+    {
+        if (Index >= Names.size())
+        {
+            return 0.0f;
+        }
+        if (!bHasExpressions)
+        {
+            return AliasWeight(Index, Mixer);
+        }
+        float Weight = 0.0f;
+        for (const FBound& Bind : Bound[Index])
+        {
+            Weight += BoundWeight(Bind.Expression, Mixer) * Bind.Weight;
+        }
+        // The alias name plays only an expression that the file does not bind.
+        const ERole Role = Roles[Index];
+        if (Role == ERole::Other)
+        {
+            const size_t Alias = AliasExpressions[Index];
+            if (Alias < NpcifyExpressionCount && !Rules[Alias].bBound)
+            {
+                Weight += AliasWeight(Index, Mixer);
+            }
+        }
+        else if (Role != ERole::Muted &&
+            !Rules[BlinkIndex].bBound && !Rules[BlinkLeftIndex].bBound && !Rules[BlinkRightIndex].bBound)
+        {
+            Weight += AliasWeight(Index, Mixer);
+        }
+        return ClampUnit(Weight);
+    }
+
+    float FNpcifyMorphTargetPlan::AliasWeight(size_t Index, const FNpcifyFacialMixer& Mixer) const
+    {
+        const ERole Role = Roles[Index];
+        if (Role == ERole::Other)
+        {
+            const size_t Alias = AliasExpressions[Index];
+            return Alias < NpcifyExpressionCount ? Mixer.GetWeightAt(Alias) : 0.0f;
+        }
+        if (Role == ERole::Muted)
+        {
+            return 0.0f;
+        }
+        const float Blink = Mixer.GetWeightAt(BlinkIndex);
+        const float Left = std::max(Blink, Mixer.GetWeightAt(BlinkLeftIndex));
+        const float Right = std::max(Blink, Mixer.GetWeightAt(BlinkRightIndex));
+        const float Shared = bHasBoth ? std::min(Left, Right) : 0.0f;
+        if (Role == ERole::Both)
+        {
+            return Shared;
+        }
+        return ClampUnit((Role == ERole::Left ? Left : Right) - Shared);
+    }
+
+    float FNpcifyMorphTargetPlan::BoundWeight(size_t Expression, const FNpcifyFacialMixer& Mixer) const
+    {
+        float Weight = Mixer.GetWeightAt(Expression);
+        // A file without binds for "blink" plays a blink on the two sides.
+        if ((Expression == BlinkLeftIndex || Expression == BlinkRightIndex) && !Rules[BlinkIndex].bBound)
+        {
+            Weight = std::max(Weight, Mixer.GetWeightAt(BlinkIndex));
+        }
+        if (Rules[Expression].bIsBinary)
+        {
+            Weight = Weight > 0.5f ? 1.0f : 0.0f;
+        }
+        if (bHasOverrides && Weight > 0.0f)
+        {
+            if (IsBlinkIndex(Expression))
+            {
+                Weight *= OverrideFactor(true, Mixer);
+            }
+            else if (IsLookIndex(Expression))
+            {
+                Weight *= OverrideFactor(false, Mixer);
+            }
+        }
+        return Weight;
+    }
+
+    float FNpcifyMorphTargetPlan::OverrideFactor(bool bBlink, const FNpcifyFacialMixer& Mixer) const
+    {
+        // VRM 1.0: an expression that overrides the blinks (or the gaze) blocks them while it has
+        // a weight, or takes its own weight from them.
+        float Factor = 1.0f;
+        for (size_t Index = 0; Index < NpcifyExpressionCount; ++Index)
+        {
+            const FRule& Rule = Rules[Index];
+            const ENpcifyExpressionOverride Override = bBlink ? Rule.OverrideBlink : Rule.OverrideLookAt;
+            if (Override == ENpcifyExpressionOverride::None || (bBlink ? IsBlinkIndex(Index) : IsLookIndex(Index)))
+            {
+                continue;
+            }
+            float Weight = Mixer.GetWeightAt(Index);
+            if (Rule.bIsBinary)
+            {
+                Weight = Weight > 0.5f ? 1.0f : 0.0f;
+            }
+            if (Override == ENpcifyExpressionOverride::Block)
+            {
+                if (Weight > 0.0f)
+                {
+                    return 0.0f;
+                }
+            }
+            else
+            {
+                Factor *= 1.0f - ClampUnit(Weight);
+            }
+        }
+        return Factor;
     }
 
     float FNpcifyFacialMixer::Clamp01(float Value)
